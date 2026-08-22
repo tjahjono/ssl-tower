@@ -1,0 +1,46 @@
+{{define "content"}}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Audit log</h1>
+    <p class="mt-1 text-sm text-slate-500">
+      Every login, account change, certificate mutation, and private-key download.
+    </p>
+  </div>
+
+  <form id="audit-filters"
+        hx-get="/audit/list"
+        hx-target="#audit-table"
+        hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms, change, submit"
+        class="flex flex-wrap items-end gap-3 rounded-xl border border-white/5 bg-slate-900/40 p-4">
+    <div>
+      <label for="audit-actor" class="field-label mb-1 block">Actor email</label>
+      <input id="audit-actor" type="search" name="actor" value="{{.Filter.ActorEmail}}" placeholder="anyone"
+             class="field-input min-w-0 px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label for="audit-action" class="field-label mb-1 block">Action</label>
+      <select id="audit-action" name="action"
+              class="field-input px-3 py-2 text-sm">
+        <option value="">Any action</option>
+        {{range .Actions}}
+        <option value="{{.}}" {{if eq $.Filter.Action .}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div>
+      <label for="audit-since" class="field-label mb-1 block">From</label>
+      <input id="audit-since" type="date" name="since"
+             class="field-input px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label for="audit-until" class="field-label mb-1 block">To</label>
+      <input id="audit-until" type="date" name="until"
+             class="field-input px-3 py-2 text-sm">
+    </div>
+  </form>
+
+  {{template "audit-table" .}}
+</div>
+{{end}}

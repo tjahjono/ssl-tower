@@ -1,0 +1,12 @@
+{{define "flash-oob"}}
+<div id="flash" hx-swap-oob="true" class="mx-auto max-w-6xl">{{if .}}{{template "flash-body" .}}{{end}}</div>
+{{end}}
+
+{{define "flash-body"}}
+<div class="flex items-start gap-3 rounded-xl px-4 py-3 text-sm ring-1 ring-inset {{flashClass .Kind}}"
+     role="status" data-autodismiss="8000">
+  <span class="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-current opacity-70"></span>
+  <p class="min-w-0 flex-1">{{.Message}}</p>
+  <button type="button" data-dismiss class="shrink-0 rounded px-1 leading-none opacity-60 hover:opacity-100" aria-label="Dismiss">&times;</button>
+</div>
+{{end}}

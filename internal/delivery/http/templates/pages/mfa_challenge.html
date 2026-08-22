@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="mx-auto max-w-sm">
+  <div class="mb-6 text-center">
+    <h1 class="text-2xl font-semibold text-white">Verification code</h1>
+    <p class="mt-1 text-sm text-slate-500">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+  </div>
+
+  {{if .Error}}
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/login/mfa" class="space-y-4 rounded-xl border border-white/5 bg-slate-900/40 p-6">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div>
+      <label for="code" class="field-label mb-1 block">Code</label>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required autofocus
+             placeholder="123456 or a recovery code"
+             class="field-input w-full px-3 py-2 text-center font-mono text-lg tracking-widest placeholder:text-sm placeholder:tracking-normal">
+    </div>
+    <button type="submit" class="w-full btn-primary px-4 py-2 text-sm">
+      Verify
+    </button>
+  </form>
+  <p class="mt-4 text-center text-xs text-slate-600">
+    <a href="/login" class="hover:text-slate-400">&larr; Back to sign in</a>
+  </p>
+</div>
+{{end}}

@@ -1,0 +1,31 @@
+{{define "summary-tiles"}}
+<div id="summary"
+     hx-get="/summary"
+     hx-trigger="every 60s, refresh from:body"
+     hx-swap="outerHTML"
+     class="space-y-3">
+  <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+    {{$s := .Summary}}
+    {{template "tile" dict "Label" "Certificates" "Value" $s.Total "Tone" "slate"}}
+    {{template "tile" dict "Label" "Healthy" "Value" $s.OK "Tone" "emerald"}}
+    {{template "tile" dict "Label" "Expiring" "Value" $s.Expiring "Tone" "amber"}}
+    {{template "tile" dict "Label" "Critical" "Value" $s.Critical "Tone" "orange"}}
+    {{template "tile" dict "Label" "Expired" "Value" $s.Expired "Tone" "rose"}}
+    {{template "tile" dict "Label" "Pending" "Value" $s.Pending "Tone" "slate"}}
+  </div>
+  <p class="text-xs text-slate-500">Alerts last swept {{since .LastSweep}}.</p>
+</div>
+{{end}}
+
+{{define "tile"}}
+<div class="rounded-xl border border-white/5 bg-slate-900/60 p-4">
+  <p class="field-label">{{.Label}}</p>
+  <p class="mt-1 text-2xl font-semibold tabular-nums
+     {{if eq .Tone "emerald"}}text-emerald-300
+     {{else if eq .Tone "amber"}}text-amber-300
+     {{else if eq .Tone "orange"}}text-orange-300
+     {{else if eq .Tone "rose"}}text-rose-300
+     {{else if eq .Tone "fuchsia"}}text-fuchsia-300
+     {{else}}text-white{{end}}">{{.Value}}</p>
+</div>
+{{end}}

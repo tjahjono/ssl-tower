@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Keep the scrollbars in the dark palette instead of the OS default. */
+  * {
+    scrollbar-color: theme("colors.slate.700") transparent;
+    scrollbar-width: thin;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: theme("colors.slate.700");
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* htmx sets .htmx-request on the element issuing a request; fade it while
+     the swap is in flight so long checks feel responsive. */
+  .htmx-request,
+  .htmx-request.htmx-indicator {
+    opacity: 0.55;
+    pointer-events: none;
+    transition: opacity 0.15s ease-in-out;
+  }
+
+  /* Shared form primitives — every text input, select, textarea, and label
+     across the app (login, monitors, CSRs, users, audit filters, account
+     pages) draws from these instead of repeating the same utility string.
+     Sizing (px-*, py-*, text-*, w-full) stays per call site since that
+     legitimately varies; color, ring, and focus state do not. */
+  .field-label {
+    @apply text-xs font-medium uppercase tracking-wide text-slate-500;
+  }
+  .field-input {
+    @apply rounded-lg border-0 bg-slate-950/60 text-slate-200 ring-1 ring-inset ring-white/10
+      placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500;
+  }
+  /* Same field, one shade lighter — for a filter bar or toolbar that sits
+     directly on the page background rather than inside a card, where
+     .field-input's bg-slate-950 would nearly vanish. */
+  .field-input-bare {
+    @apply field-input bg-slate-900/60;
+  }
+
+  /* Buttons carry only color, weight, and transition here — radius, padding,
+     and text size still vary by call site (a table-row action button is
+     smaller than a form's submit button). */
+  .btn-primary {
+    @apply rounded-lg bg-sky-500 font-semibold text-slate-950 transition hover:bg-sky-400;
+  }
+  .btn-secondary {
+    @apply rounded-lg bg-white/5 font-medium text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-white/10;
+  }
+  /* Small pill actions on table rows (Check, Pause, Open, Delete, Reset
+     password) — shape and weight are shared, color and ring stay per call
+     site so a destructive action can stay visually distinct from a neutral
+     one. */
+  .btn-ghost {
+    @apply rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset transition;
+  }
+
+  /* A checkbox rendered as a toggle-able pill instead of a native checkbox —
+     used by the extended-key-usage picker, and anywhere else a multi-select
+     reads better as chips than as a checklist. The <input> stays in the DOM
+     (keyboard- and screen-reader-accessible) but visually hidden as a peer;
+     the visible pill is its sibling <span>, styled via peer-checked. `peer`
+     can't be folded into this class via @apply (Tailwind requires it as a
+     literal class on the element), so markup pairs the two directly:
+     <label><input type="checkbox" class="peer chip-toggle-input">
+     <span class="chip-toggle-label">Text</span></label> */
+  .chip-toggle-input {
+    @apply sr-only;
+  }
+  .chip-toggle-label {
+    @apply inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-xs
+      font-medium ring-1 ring-inset transition
+      bg-white/[0.02] text-slate-400 ring-white/10 hover:bg-white/5 hover:text-slate-300
+      peer-checked:bg-sky-500/10 peer-checked:text-sky-300 peer-checked:ring-sky-500/30
+      peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500;
+  }
+}

@@ -1,0 +1,49 @@
+{{define "download-panel"}}
+<form method="get" action="{{.Action}}" class="space-y-3">
+  <div>
+    <label for="format-{{.ID}}" class="field-label mb-1 block">Format</label>
+    <select id="format-{{.ID}}" name="format"
+            class="field-input w-full px-3 py-2 text-sm">
+      {{range .Formats}}<option value="{{.Value}}">{{.Label}} — {{.Hint}}</option>{{end}}
+    </select>
+  </div>
+
+  <div>
+    <label for="password-{{.ID}}" class="field-label mb-1 block">
+      PKCS#12 password <span class="normal-case text-slate-600">(only used for .pfx)</span>
+    </label>
+    <input id="password-{{.ID}}" name="password" type="password" autocomplete="new-password" placeholder="leave blank for no password"
+           class="field-input w-full px-3 py-2 text-sm">
+  </div>
+
+  <label class="flex items-start gap-2 text-xs text-slate-400">
+    <input type="checkbox" name="legacy" class="mt-0.5 rounded border-white/20 bg-slate-950 text-sky-500 focus:ring-sky-500">
+    <span>Legacy PKCS#12 encryption (RC2/3DES) for old Windows, Java 8 and appliances</span>
+  </label>
+
+  <button type="submit"
+          class="w-full btn-primary px-3 py-2 text-sm">
+    Download
+  </button>
+</form>
+{{end}}
+
+{{define "pem-block"}}
+<div>
+  <div class="mb-1.5 flex items-center justify-between gap-2">
+    <p class="field-label">{{.Label}}</p>
+    <button type="button" data-copy="#{{.ID}}"
+            class="btn-ghost py-0.5 text-slate-400 ring-white/10 hover:bg-white/5 hover:text-slate-100">
+      Copy
+    </button>
+  </div>
+  <pre id="{{.ID}}" class="max-h-56 overflow-auto rounded-lg bg-slate-950/70 p-3 font-mono text-[11px] leading-relaxed text-slate-400 ring-1 ring-inset ring-white/5">{{.Body}}</pre>
+</div>
+{{end}}
+
+{{define "fact"}}
+<div class="min-w-0">
+  <dt class="field-label">{{.Label}}</dt>
+  <dd class="mt-0.5 break-words text-sm text-slate-200">{{if .Value}}{{.Value}}{{else}}<span class="text-slate-600">—</span>{{end}}</dd>
+</div>
+{{end}}

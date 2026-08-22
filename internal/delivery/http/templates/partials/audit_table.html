@@ -1,0 +1,41 @@
+{{define "audit-table"}}
+<div id="audit-table" class="overflow-hidden rounded-xl border border-white/5 bg-slate-900/40">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-white/5 text-sm">
+      <thead class="bg-white/[0.02] text-xs uppercase tracking-wide text-slate-500">
+        <tr>
+          <th scope="col" class="px-4 py-3 text-left font-medium">When</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Actor</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Action</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Target</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium lg:table-cell">Detail</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">IP</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-white/5">
+        {{range .Entries}}
+        <tr>
+          <td class="whitespace-nowrap px-4 py-3 text-slate-400">{{formatStamp .CreatedAt}}</td>
+          <td class="px-4 py-3 text-slate-200">{{if hasValue .ActorEmail}}{{.ActorEmail}}{{else}}<span class="text-slate-600">system</span>{{end}}</td>
+          <td class="px-4 py-3">
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{auditBadgeClass .Action}}">{{.Action}}</span>
+          </td>
+          <td class="px-4 py-3 text-slate-400">
+            {{if hasValue .TargetType}}{{.TargetType}}{{if hasValue .TargetID}} <span class="text-slate-600">{{truncate 8 .TargetID}}</span>{{end}}{{else}}—{{end}}
+          </td>
+          <td class="hidden max-w-xs truncate px-4 py-3 text-slate-500 lg:table-cell" title="{{.Detail}}">{{if hasValue .Detail}}{{.Detail}}{{else}}—{{end}}</td>
+          <td class="hidden px-4 py-3 text-slate-600 sm:table-cell">{{.IP}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="px-4 py-10 text-center text-slate-500">No matching entries.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if ge (len .Entries) 200}}
+  <p class="border-t border-white/5 px-4 py-2 text-xs text-slate-600">Showing the latest 200 matching entries — narrow the filters above to see more precisely.</p>
+  {{end}}
+</div>
+{{end}}

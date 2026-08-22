@@ -1,0 +1,338 @@
+{{define "content"}}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Certificate vault</h1>
+    <p class="mt-1 text-sm text-slate-500">
+      Generate a key pair and CSR, or upload a certificate you already have. Expiry is read from
+      the certificate itself — nothing here is checked live against an endpoint.
+    </p>
+  </div>
+
+  <section class="rounded-xl border border-white/5 bg-slate-900/40 p-5" data-tabs>
+    <div class="mb-5">
+      <h2 class="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+        Choose how to bring in a certificate
+      </h2>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" role="tablist">
+        <button type="button" data-tab-button="generate" aria-selected="true"
+                class="flex flex-col items-start gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-left transition hover:border-sky-500/25 ring-1 ring-inset ring-sky-500/25 bg-sky-500/10 text-sky-300">
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-500/10 ring-1 ring-inset ring-sky-500/25">
+            <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+            </svg>
+          </span>
+          <span class="text-sm font-semibold">Generate a CSR</span>
+          <span class="text-xs leading-snug text-slate-500">Mint a new key pair and signing request right here.</span>
+        </button>
+        <button type="button" data-tab-button="import-csr" aria-selected="false"
+                class="flex flex-col items-start gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-left text-slate-400 transition hover:border-sky-500/25 hover:text-slate-200">
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 ring-1 ring-inset ring-white/10">
+            <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+            </svg>
+          </span>
+          <span class="text-sm font-semibold">Import CSR + key</span>
+          <span class="text-xs leading-snug text-slate-500">Paste a CSR and private key generated elsewhere, e.g. with openssl.</span>
+        </button>
+        <button type="button" data-tab-button="upload-pem" aria-selected="false"
+                class="flex flex-col items-start gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-left text-slate-400 transition hover:border-sky-500/25 hover:text-slate-200">
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 ring-1 ring-inset ring-white/10">
+            <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V4.5m0 12-4.5-4.5m4.5 4.5 4.5-4.5M4.5 19.5h15"/>
+            </svg>
+          </span>
+          <span class="text-sm font-semibold">Upload PEM + key</span>
+          <span class="text-xs leading-snug text-slate-500">Already have an issued certificate? Paste it in as text.</span>
+        </button>
+        <button type="button" data-tab-button="upload-pfx" aria-selected="false"
+                class="flex flex-col items-start gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-4 text-left text-slate-400 transition hover:border-sky-500/25 hover:text-slate-200">
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 ring-1 ring-inset ring-white/10">
+            <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 7.5 12 3l9 4.5M3 7.5v9L12 21m-9-4.5 9-4.5m0 9 9-4.5v-9M12 12 3 7.5M12 12l9-4.5M12 12v9"/>
+            </svg>
+          </span>
+          <span class="text-sm font-semibold">Upload PKCS#12 (bulk)</span>
+          <span class="text-xs leading-snug text-slate-500">Import one or more .pfx/.p12 bundles at once with a shared password.</span>
+        </button>
+      </div>
+    </div>
+
+    <div data-tab-panel="generate">
+      <form hx-post="/certificates/generate" hx-target="#certificate-table" hx-swap="outerHTML" class="space-y-5">
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="sm:col-span-2 lg:col-span-1">
+            <label for="common_name" class="field-label mb-1 block">Common name *</label>
+            <input id="common_name" name="common_name" required placeholder="www.example.com"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="organization" class="field-label mb-1 block">Organization</label>
+            <input id="organization" name="organization" placeholder="Example Pte Ltd"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="organizational_unit" class="field-label mb-1 block">Org. unit</label>
+            <input id="organizational_unit" name="organizational_unit" placeholder="Platform"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="country" class="field-label mb-1 block">Country (2 letters)</label>
+            <input id="country" name="country" maxlength="2" placeholder="ID"
+                   class="field-input w-full px-3 py-2 text-sm uppercase">
+          </div>
+          <div>
+            <label for="province" class="field-label mb-1 block">State / province</label>
+            <input id="province" name="province" placeholder="Jakarta"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="locality" class="field-label mb-1 block">Locality</label>
+            <input id="locality" name="locality" placeholder="Jakarta Selatan"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="email" class="field-label mb-1 block">Email</label>
+            <input id="email" name="email" type="email" placeholder="ops@example.com"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="owner" class="field-label mb-1 block">Owner / team</label>
+            <input id="owner" name="owner" placeholder="Platform team"
+                   class="field-input w-full px-3 py-2 text-sm">
+          </div>
+        </div>
+
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div class="space-y-4">
+            <div>
+              <label for="sans" class="field-label mb-1 block">
+                Subject alternative names
+              </label>
+              <textarea id="sans" name="sans" rows="4" spellcheck="false"
+                        placeholder="example.com&#10;*.example.com&#10;10.0.0.5"
+                        class="field-input w-full px-3 py-2 font-mono text-xs"></textarea>
+              <p class="mt-1 text-xs text-slate-600">One per line or comma separated. IPs are detected automatically; the common name is always included.</p>
+            </div>
+
+            <div>
+              <span class="field-label mb-1 block">Extended key usage</span>
+              <div class="flex flex-wrap gap-2">
+                {{range .EKUOptions}}
+                <label>
+                  <input type="checkbox" name="eku" value="{{.Key}}"
+                         {{if or (eq .Key "server_auth") (eq .Key "client_auth")}}checked{{end}}
+                         class="peer chip-toggle-input">
+                  <span class="chip-toggle-label">{{.Label}}</span>
+                </label>
+                {{end}}
+              </div>
+              <p class="mt-1.5 text-xs text-slate-600">
+                Requested via the CSR's extension-request attribute — an internal CA can honour it,
+                but most public CAs decide EKU from their own product profile. Always applied as
+                asked if you self-sign below.
+              </p>
+            </div>
+          </div>
+
+          <div class="space-y-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label for="key_algorithm" class="field-label mb-1 block">Key algorithm</label>
+                <select id="key_algorithm" name="key_algorithm"
+                        class="field-input w-full px-3 py-2 text-sm">
+                  <option value="rsa">RSA</option>
+                  <option value="ecdsa">ECDSA</option>
+                </select>
+              </div>
+              <div data-key-rsa>
+                <label for="key_bits" class="field-label mb-1 block">Key size</label>
+                <select id="key_bits" name="key_bits"
+                        class="field-input w-full px-3 py-2 text-sm">
+                  <option value="2048">2048 bit</option>
+                  <option value="3072">3072 bit</option>
+                  <option value="4096">4096 bit</option>
+                </select>
+              </div>
+              <div data-key-ecdsa class="hidden">
+                <label for="key_curve" class="field-label mb-1 block">Curve</label>
+                <select id="key_curve" name="key_curve"
+                        class="field-input w-full px-3 py-2 text-sm">
+                  <option value="P-256">P-256</option>
+                  <option value="P-384">P-384</option>
+                  <option value="P-521">P-521</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label for="notes" class="field-label mb-1 block">Notes</label>
+              <input id="notes" name="notes" placeholder="Renewal for the 2026 wildcard"
+                     class="field-input w-full px-3 py-2 text-sm">
+            </div>
+
+            <label class="flex items-start gap-2 text-xs text-slate-400">
+              <input type="checkbox" name="self_sign" class="mt-0.5 rounded border-white/20 bg-slate-950 text-sky-500 focus:ring-sky-500">
+              <span>Also issue a self-signed certificate for
+                <input name="self_sign_days" type="number" min="1" max="3650" value="365"
+                       class="mx-1 w-20 rounded border-0 bg-slate-950/60 px-2 py-0.5 text-xs text-slate-200 ring-1 ring-inset ring-white/10">
+                days, so staging can come up before the CA responds.</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 border-t border-white/5 pt-4">
+          <button type="submit" class="btn-primary px-4 py-2 text-sm">
+            Generate key &amp; CSR
+          </button>
+          {{if .Encrypted}}
+            <span class="text-xs text-emerald-300/80">Private keys are encrypted at rest.</span>
+          {{else}}
+            <span class="text-xs text-amber-300/80">Private keys are stored unencrypted — set <code class="font-mono">APP_ENCRYPTION_KEY</code>.</span>
+          {{end}}
+        </div>
+      </form>
+    </div>
+
+    <div data-tab-panel="import-csr" class="hidden">
+      <form hx-post="/certificates/import-csr" hx-target="#certificate-table" hx-swap="outerHTML" class="space-y-4">
+        <p class="text-xs text-slate-500">
+          Already generated a CSR and its key yourself — on your own laptop with
+          <span class="font-mono">openssl</span>, say — rather than through this page? Paste both
+          here and it's filed as a pending certificate, ready for the same "attach the CA's answer"
+          or self-sign flow as one generated in-app. Subject, SANs, and any extended key usage the
+          CSR itself requests are read straight off the pasted CSR. The key is rejected if it
+          doesn't match.
+        </p>
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div>
+            <label for="csr_pem" class="field-label mb-1 block">Signing request (CSR) PEM *</label>
+            <textarea id="csr_pem" name="csr_pem" rows="8" required spellcheck="false"
+                      placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+                      class="field-input w-full p-3 font-mono text-[11px]"></textarea>
+          </div>
+          <div>
+            <label for="csr-import-key" class="field-label mb-1 block">Private key PEM *</label>
+            <textarea id="csr-import-key" name="private_key_pem" rows="8" required spellcheck="false"
+                      placeholder="-----BEGIN PRIVATE KEY-----"
+                      class="field-input w-full p-3 font-mono text-[11px]"></textarea>
+          </div>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label for="csr-import-owner" class="field-label mb-1 block">Owner / team</label>
+            <input id="csr-import-owner" name="owner" placeholder="Platform team" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="csr-import-notes" class="field-label mb-1 block">Notes</label>
+            <input id="csr-import-notes" name="notes" placeholder="Made on my laptop while offline" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="submit" class="btn-primary px-4 py-2 text-sm">Import CSR &amp; key</button>
+          {{if .Encrypted}}
+            <span class="text-xs text-emerald-300/80">Private keys are encrypted at rest.</span>
+          {{else}}
+            <span class="text-xs text-amber-300/80">Private keys are stored unencrypted — set <code class="font-mono">APP_ENCRYPTION_KEY</code>.</span>
+          {{end}}
+        </div>
+      </form>
+    </div>
+
+    <div data-tab-panel="upload-pem" class="hidden">
+      <form hx-post="/certificates/import" hx-target="#certificate-table" hx-swap="outerHTML" class="space-y-4">
+        <p class="text-xs text-slate-500">
+          Paste the certificate a CA already issued (a full chain is fine — the first block is
+          stored as the leaf) and, optionally, its private key. A key that doesn't match the
+          certificate is rejected.
+        </p>
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div>
+            <label for="certificate_pem" class="field-label mb-1 block">Certificate PEM *</label>
+            <textarea id="certificate_pem" name="certificate_pem" rows="8" required spellcheck="false"
+                      placeholder="-----BEGIN CERTIFICATE-----"
+                      class="field-input w-full p-3 font-mono text-[11px]"></textarea>
+          </div>
+          <div>
+            <label for="chain_pem" class="field-label mb-1 block">Additional chain PEM <span class="normal-case text-slate-600">(optional)</span></label>
+            <textarea id="chain_pem" name="chain_pem" rows="8" spellcheck="false"
+                      placeholder="-----BEGIN CERTIFICATE-----"
+                      class="field-input w-full p-3 font-mono text-[11px]"></textarea>
+          </div>
+        </div>
+        <div>
+          <label for="private_key_pem" class="field-label mb-1 block">Private key PEM <span class="normal-case text-slate-600">(optional)</span></label>
+          <textarea id="private_key_pem" name="private_key_pem" rows="5" spellcheck="false"
+                    placeholder="-----BEGIN PRIVATE KEY-----"
+                    class="field-input w-full p-3 font-mono text-[11px]"></textarea>
+        </div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label for="pem-owner" class="field-label mb-1 block">Owner / team</label>
+            <input id="pem-owner" name="owner" placeholder="Platform team" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="pem-notes" class="field-label mb-1 block">Notes</label>
+            <input id="pem-notes" name="notes" placeholder="Migrated from the old vault" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+        </div>
+        <button type="submit" class="btn-primary px-4 py-2 text-sm">Import certificate</button>
+      </form>
+    </div>
+
+    <div data-tab-panel="upload-pfx" class="hidden">
+      <form hx-post="/certificates/import-pfx" hx-target="#certificate-table" hx-swap="outerHTML"
+            hx-encoding="multipart/form-data" class="space-y-4">
+        <p class="text-xs text-slate-500">
+          Choose one or more <span class="font-mono">.pfx</span>/<span class="font-mono">.p12</span> bundles —
+          the same password is tried against all of them, which matches how a CA or Windows export
+          usually hands over a batch. Each file succeeds or fails on its own.
+        </p>
+        <div>
+          <label for="pfx_files" class="field-label mb-1 block">PKCS#12 file(s) *</label>
+          <input id="pfx_files" name="pfx_files" type="file" accept=".pfx,.p12" multiple required
+                 class="field-input w-full px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-slate-200">
+        </div>
+        <div class="grid gap-4 sm:grid-cols-3">
+          <div>
+            <label for="pfx-password" class="field-label mb-1 block">Password</label>
+            <input id="pfx-password" name="password" type="password" autocomplete="new-password"
+                   placeholder="leave blank if none" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="pfx-owner" class="field-label mb-1 block">Owner / team</label>
+            <input id="pfx-owner" name="owner" placeholder="Platform team" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label for="pfx-notes" class="field-label mb-1 block">Notes</label>
+            <input id="pfx-notes" name="notes" placeholder="Bulk import, Q1 renewals" class="field-input w-full px-3 py-2 text-sm">
+          </div>
+        </div>
+        <button type="submit" class="btn-primary px-4 py-2 text-sm">Import bundle(s)</button>
+      </form>
+    </div>
+  </section>
+
+  <form id="certificate-filters"
+        hx-get="/certificates/list"
+        hx-target="#certificate-table"
+        hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms, change, submit"
+        class="flex flex-wrap items-center gap-3">
+    <input type="search" name="q" value="{{.Filter.Search}}" placeholder="Search common name, SAN, or owner"
+           class="field-input-bare min-w-0 flex-1 px-3 py-2 text-sm">
+    <select name="status" class="field-input-bare px-3 py-2 text-sm">
+      <option value="">All statuses</option>
+      <option value="pending" {{if eq .Filter.Status "pending"}}selected{{end}}>Awaiting certificate</option>
+      <option value="issued" {{if eq .Filter.Status "issued"}}selected{{end}}>Issued</option>
+    </select>
+    <select name="origin" class="field-input-bare px-3 py-2 text-sm">
+      <option value="">Generated &amp; uploaded</option>
+      <option value="generated" {{if eq .Filter.Origin "generated"}}selected{{end}}>Generated only</option>
+      <option value="uploaded" {{if eq .Filter.Origin "uploaded"}}selected{{end}}>Uploaded only</option>
+    </select>
+  </form>
+
+  {{template "certificate-table" .}}
+</div>
+{{end}}

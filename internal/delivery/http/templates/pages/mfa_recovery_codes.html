@@ -1,0 +1,23 @@
+{{define "content"}}
+<div class="mx-auto max-w-md">
+  <div class="mb-6 text-center">
+    <h1 class="text-2xl font-semibold text-white">Save your recovery codes</h1>
+    <p class="mt-1 text-sm text-slate-500">
+      Two-factor authentication is now on. Each code below works once, if you ever lose access to your authenticator app.
+      This is the only time they're shown — store them somewhere safe.
+    </p>
+  </div>
+
+  <div class="rounded-xl border border-amber-500/25 bg-amber-500/5 p-6">
+    <div class="grid grid-cols-2 gap-2 font-mono text-sm text-slate-200">
+      {{range .RecoveryCodes}}
+      <div class="rounded-lg bg-slate-950/60 px-3 py-2 text-center ring-1 ring-inset ring-white/10">{{.}}</div>
+      {{end}}
+    </div>
+  </div>
+
+  <a href="/" class="mt-6 block w-full btn-primary px-4 py-2 text-center text-sm">
+    I've saved these — continue
+  </a>
+</div>
+{{end}}

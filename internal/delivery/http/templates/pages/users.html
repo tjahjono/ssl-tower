@@ -1,0 +1,45 @@
+{{define "content"}}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Users</h1>
+    <p class="mt-1 text-sm text-slate-500">
+      Admin manages accounts and roles, and is the only role that can download certificates or key material. Editor has full read-write access and can still export a bare signing request. Viewer can read everything but can't create, change, delete, or download anything.
+    </p>
+  </div>
+
+  <section class="rounded-xl border border-white/5 bg-slate-900/40 p-5">
+    <h2 class="mb-4 text-sm font-semibold text-white">Add a user</h2>
+    <form hx-post="/users" hx-target="#user-table" hx-swap="outerHTML" data-reset
+          class="grid gap-3 sm:grid-cols-[2fr_1fr_2fr_auto]">
+      <div>
+        <label for="new-email" class="field-label mb-1 block">Email</label>
+        <input id="new-email" name="email" type="email" required placeholder="person@example.com"
+               class="field-input w-full px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label for="new-role" class="field-label mb-1 block">Role</label>
+        <select id="new-role" name="role"
+                class="field-input w-full px-3 py-2 text-sm">
+          <option value="viewer">Viewer</option>
+          <option value="editor" selected>Editor</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div>
+        <label for="new-password" class="field-label mb-1 block">Temporary password</label>
+        <input id="new-password" name="password" type="text" required minlength="10" placeholder="min. 10 characters"
+               class="field-input w-full px-3 py-2 text-sm">
+      </div>
+      <div class="flex items-end">
+        <button type="submit" class="w-full btn-primary px-4 py-2 text-sm sm:w-auto">
+          Add user
+        </button>
+      </div>
+    </form>
+    <p class="mt-2 text-xs text-slate-600">They'll be forced to change this password and enroll MFA on first login.</p>
+  </section>
+
+  {{template "user-table" .}}
+</div>
+{{end}}

@@ -1,0 +1,39 @@
+{{define "content"}}
+<div class="mx-auto max-w-sm">
+  <div class="mb-6 text-center">
+    <h1 class="text-2xl font-semibold text-white">Set up two-factor authentication</h1>
+    <p class="mt-1 text-sm text-slate-500">Required before you can manage monitors or signing requests.</p>
+  </div>
+
+  {{if .Error}}
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+  {{end}}
+
+  <div class="rounded-xl border border-white/5 bg-slate-900/40 p-6">
+    <ol class="mb-5 space-y-3 text-sm text-slate-400">
+      <li><span class="text-slate-200">1.</span> Scan this QR code with an authenticator app (Google Authenticator, 1Password, Authy).</li>
+      <li><span class="text-slate-200">2.</span> Enter the 6-digit code it shows.</li>
+    </ol>
+
+    <div class="mb-5 flex justify-center">
+      <img src="data:image/png;base64,{{.Enrollment.QRPNGBase64}}" width="200" height="200" alt="Authenticator QR code"
+           class="rounded-lg bg-white p-2">
+    </div>
+
+    {{template "pem-block" dict "ID" "totp-secret" "Label" "Can't scan? Enter manually" "Body" .Enrollment.Secret}}
+
+    <form method="post" action="/account/mfa/enroll" class="mt-5 space-y-4">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <div>
+        <label for="code" class="field-label mb-1 block">6-digit code</label>
+        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required autofocus
+               placeholder="123456"
+               class="field-input w-full px-3 py-2 text-center font-mono text-lg tracking-widest placeholder:text-sm placeholder:tracking-normal">
+      </div>
+      <button type="submit" class="w-full btn-primary px-4 py-2 text-sm">
+        Confirm and enable
+      </button>
+    </form>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,33 @@
+{{define "content"}}
+<div class="mx-auto max-w-xs">
+  <div class="mb-6 text-center">
+    <h1 class="text-2xl font-semibold text-white">Sign in</h1>
+    <p class="mt-1 text-sm text-slate-500">Manage monitors and signing requests.</p>
+  </div>
+
+  {{if .Notice}}
+    <div class="mb-4 rounded-xl bg-sky-500/10 px-4 py-3 text-sm text-sky-200 ring-1 ring-inset ring-sky-500/25">{{.Notice}}</div>
+  {{end}}
+  {{if .Error}}
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/login" class="space-y-4 rounded-xl border border-white/5 bg-slate-900/40 p-6">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <div>
+      <label for="email" class="field-label mb-1 block">Email</label>
+      <input id="email" name="email" type="email" required autofocus autocomplete="username"
+             class="field-input w-full px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label for="password" class="field-label mb-1 block">Password</label>
+      <input id="password" name="password" type="password" required autocomplete="current-password"
+             class="field-input w-full px-3 py-2 text-sm">
+    </div>
+    <button type="submit" class="w-full btn-primary px-4 py-2 text-sm">
+      Sign in
+    </button>
+  </form>
+</div>
+{{end}}

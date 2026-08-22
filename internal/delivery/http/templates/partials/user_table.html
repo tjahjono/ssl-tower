@@ -1,0 +1,78 @@
+{{define "user-table-response"}}
+{{template "user-table" .}}
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "user-table"}}
+<div id="user-table" class="overflow-hidden rounded-xl border border-white/5 bg-slate-900/40">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-white/5 text-sm">
+      <thead class="bg-white/[0.02] text-xs uppercase tracking-wide text-slate-500">
+        <tr>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Email</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Role</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">MFA</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Last login</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-white/5">
+        {{range .Users}}
+        <tr>
+          <td class="px-4 py-3">
+            <p class="font-medium text-slate-100">{{.Email}}</p>
+            {{if .MustChangePassword}}<p class="text-xs text-amber-400/80">must change password</p>{{end}}
+          </td>
+          <td class="px-4 py-3">
+            <select hx-post="/users/{{.ID}}/role" hx-trigger="change" hx-target="#user-table" hx-swap="outerHTML"
+                    class="field-input px-2 py-1.5 text-sm">
+              <option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>Viewer</option>
+              <option value="editor" {{if eq .Role "editor"}}selected{{end}}>Editor</option>
+              <option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option>
+            </select>
+          </td>
+          <td class="px-4 py-3">
+            {{if .MFAEnabled}}
+              <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30">Enabled</span>
+            {{else}}
+              <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-slate-400 ring-1 ring-inset ring-slate-500/30">Not yet</span>
+            {{end}}
+          </td>
+          <td class="hidden px-4 py-3 text-slate-500 sm:table-cell">{{sinceOrNever .LastLoginAt}}</td>
+          <td class="px-4 py-3">
+            <div class="flex items-center justify-end gap-2">
+              <details class="relative">
+                <summary class="btn-ghost cursor-pointer list-none text-slate-400 ring-white/10 hover:bg-white/5 hover:text-slate-100">
+                  Reset password
+                </summary>
+                <form hx-post="/users/{{.ID}}/reset-password" hx-target="#user-table" hx-swap="outerHTML"
+                      class="absolute right-0 z-10 mt-2 w-64 space-y-2 rounded-lg border border-white/10 bg-slate-900 p-3 shadow-xl">
+                  <label class="field-label block">New temporary password</label>
+                  <input name="password" type="text" required minlength="10" placeholder="min. 10 characters"
+                         class="field-input w-full px-3 py-2 text-sm">
+                  <button type="submit" class="w-full btn-primary px-3 py-1.5 text-xs">
+                    Reset
+                  </button>
+                </form>
+              </details>
+              <button type="button"
+                      hx-delete="/users/{{.ID}}"
+                      hx-confirm="Remove {{.Email}}? This cannot be undone."
+                      hx-target="#user-table"
+                      hx-swap="outerHTML"
+                      class="btn-ghost text-rose-300/80 ring-rose-500/20 hover:bg-rose-500/10">
+                Delete
+              </button>
+            </div>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="5" class="px-4 py-10 text-center text-slate-500">No users yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
