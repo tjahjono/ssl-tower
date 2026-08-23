@@ -28,6 +28,7 @@ const (
 	AuditCertificateSelfSigned  = "certificate_self_signed"
 	AuditKeyDownloaded          = "private_key_downloaded"
 	AuditHelpContentUpdated     = "help_content_updated"
+	AuditCertificateChainEdited = "certificate_chain_edited"
 )
 
 // AuditEntry is one recorded action in the admin-facing audit trail. Actor

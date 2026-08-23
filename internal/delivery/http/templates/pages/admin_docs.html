@@ -1,0 +1,150 @@
+{{define "content"}}
+<div class="space-y-8">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-ink">Technical docs</h1>
+    <p class="mt-1 max-w-2xl text-sm text-ink-5">
+      How this app is put together and what actually runs for each major action — admin-only,
+      since it names internal handlers, services, and tables rather than describing how to use the
+      product (that's <a href="/help" class="text-hue-sky hover:text-hue-sky-strong">Help</a>). For
+      the reasoning behind a design choice rather than the mechanics of it, see
+      <span class="font-mono text-ink-4">CLAUDE.md</span> in the repository.
+    </p>
+  </div>
+
+  <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+    <h2 class="mb-3 text-sm font-semibold text-ink">Layering</h2>
+    <p class="mb-3 text-sm text-ink-3">
+      Dependencies point one way only. A handler calls a service; a service calls a repository
+      interface declared in <span class="font-mono text-ink-4">domain</span>; SQL never leaves
+      <span class="font-mono text-ink-4">repository/postgres</span>.
+    </p>
+    <div class="overflow-x-auto rounded-lg bg-surface/60 p-3 font-mono text-xs text-ink-2">
+      delivery/http (routing, handlers, templates)
+      &rarr; service (business rules)
+      &rarr; domain (entities, ports)
+      &larr; repository/postgres (SQL, implements the ports)
+    </div>
+    <dl class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {{template "fact" dict "Label" "internal/domain" "Value" "Certificate, User, AuditEntry, SiteContent — entities, validation, repository interfaces. Imports neither pgx nor net/http."}}
+      {{template "fact" dict "Label" "internal/repository/postgres" "Value" "CertificateRepository, UserRepository, AuditRepository, SiteContentRepository — the only place SQL lives."}}
+      {{template "fact" dict "Label" "internal/service" "Value" "CertificateService, AuthService, AuditService, SiteContentService, AlertService/AlertSweeper — business rules, one file per concern."}}
+      {{template "fact" dict "Label" "internal/delivery/http" "Value" "Server (router+handlers), Renderer (templates), one *_handler.go per area, templates/pages + templates/partials."}}
+      {{template "fact" dict "Label" "internal/pkg/certutil" "Value" "Keys, CSRs, chain validation, PKCS#7/PKCS#12 encode/decode. The only package that imports crypto/x509 for this domain — domain and delivery never do."}}
+      {{template "fact" dict "Label" "internal/pkg/secret" "Value" "AES-256-GCM envelope encryption (Sealer) for stored private keys."}}
+      {{template "fact" dict "Label" "internal/pkg/authcrypto" "Value" "bcrypt password hashing, opaque session tokens, TOTP recovery codes."}}
+      {{template "fact" dict "Label" "web/input.css" "Value" "Tailwind source, prebuilt into static/app.css — no Node needed at runtime."}}
+    </dl>
+  </section>
+
+  <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+    <h2 class="mb-3 text-sm font-semibold text-ink">Every request, before it reaches a handler</h2>
+    <p class="mb-3 text-sm text-ink-3">
+      <span class="font-mono text-ink-4">Server.Handler()</span> wraps the mux in a fixed order —
+      each stage can short-circuit the ones after it:
+    </p>
+    <ol class="space-y-2 text-sm text-ink-3">
+      <li><span class="font-mono text-ink-2">recoverer</span> — catches a panic, logs it, returns a 500 instead of crashing the process.</li>
+      <li><span class="font-mono text-ink-2">requestLogger</span> — one structured log line per request (method, path, status, duration).</li>
+      <li><span class="font-mono text-ink-2">securityHeaders</span> — CSP, X-Frame-Options, nosniff on every response.</li>
+      <li><span class="font-mono text-ink-2">csrfProtect</span> — double-submit cookie check on every mutating method (POST/PUT/PATCH/DELETE), including the login form itself.</li>
+      <li><span class="font-mono text-ink-2">loadSession</span> — reads the <span class="font-mono">session</span> cookie, calls <span class="font-mono">AuthService.ValidateSession</span>, and puts the resulting <span class="font-mono">*domain.User</span> (or nil) on the request context.</li>
+      <li>the mux, then whichever of <span class="font-mono text-ink-2">requireAuth</span> / <span class="font-mono text-ink-2">requireWrite</span> / <span class="font-mono text-ink-2">requireAdmin</span> wraps that specific route.</li>
+    </ol>
+    <p class="mt-3 text-xs text-ink-5">
+      <span class="font-mono">requireWrite</span> and <span class="font-mono">requireAdmin</span> both call <span class="font-mono">requireAuth</span> first, then check <span class="font-mono">user.Role.CanWrite()</span> / <span class="font-mono">CanManageUsers()</span> — a role check always happens server-side, never only in the template.
+    </p>
+  </section>
+
+  <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+    <h2 class="mb-4 text-sm font-semibold text-ink">Request flows</h2>
+    <div class="space-y-5">
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Sign in with MFA</h3>
+        <ol class="space-y-1 text-sm text-ink-3">
+          <li>1. <span class="font-mono text-xs">POST /login</span> → <span class="font-mono text-xs">handleLoginSubmit</span> → <span class="font-mono text-xs">AuthService.Login</span> checks the bcrypt hash via <span class="font-mono text-xs">authcrypto</span>, records a <span class="font-mono text-xs">login_failed</span> audit entry on a bad password, and on success returns a short-lived signed "password verified" token — no session cookie yet.</li>
+          <li>2. <span class="font-mono text-xs">GET /login/mfa</span> → <span class="font-mono text-xs">handleMFAChallengePage</span> — plain form render, the pending token round-trips as a hidden field.</li>
+          <li>3. <span class="font-mono text-xs">POST /login/mfa</span> → <span class="font-mono text-xs">handleMFAChallengeSubmit</span> → <span class="font-mono text-xs">AuthService.VerifyMFA</span> checks the TOTP code (or a one-time recovery code via <span class="font-mono text-xs">tryRecoveryCode</span>), then <span class="font-mono text-xs">createSession</span> mints a random 32-byte token, SHA-256-hashes it before <span class="font-mono text-xs">UserRepository</span> stores it, and the raw token becomes the <span class="font-mono text-xs">session</span> cookie.</li>
+        </ol>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Generate a CSR</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/generate</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateGenerate</span> parses the form (subject fields, SANs, key spec, requested EKU) → <span class="font-mono text-xs">CertificateService.CreateCSR</span> calls <span class="font-mono text-xs">certutil.GenerateKey</span> then <span class="font-mono text-xs">certutil.CreateCSR</span> (which attaches the EKU extension-request), encrypts the key via the <span class="font-mono text-xs">secret.Sealer</span> if configured, and <span class="font-mono text-xs">CertificateRepository.Create</span> inserts one row with <span class="font-mono text-xs">Status = pending</span>.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Import a CSR + key generated elsewhere</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/import-csr</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateImportCSR</span> → <span class="font-mono text-xs">CertificateService.ImportCSR</span> parses the pasted CSR with <span class="font-mono text-xs">certutil.ParseCSRPEM</span>, pulls subject/SANs/requested-EKU straight off it, confirms the pasted key matches via <span class="font-mono text-xs">certutil.MatchesCSRKey</span>, then stores it the same way as Generate — same <span class="font-mono text-xs">Origin = generated</span>, since what differs is which machine ran the keygen, not the lifecycle.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Upload a certificate (PEM or PKCS#12)</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/import</span> → <span class="font-mono text-xs">handleCertificateImport</span> → <span class="font-mono text-xs">CertificateService.Import</span> for a pasted PEM triplet; <span class="font-mono text-xs">POST /certificates/import-pfx</span> → <span class="font-mono text-xs">handleCertificateImportPFX</span> → <span class="font-mono text-xs">ImportPFX</span> (single file) or <span class="font-mono text-xs">BulkImportPFX</span> (multipart, several files against one shared password, one <span class="font-mono text-xs">BulkImportResult</span> per file) — both decode via <span class="font-mono text-xs">certutil.DecodePKCS12</span>. Either path lands with <span class="font-mono text-xs">Origin = uploaded</span> and <span class="font-mono text-xs">Status = issued</span> immediately (no pending stage), and checks <span class="font-mono text-xs">CertificateRepository.FindSharingFingerprint</span> to flag a duplicate already on file.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Attach the CA's response to a pending CSR</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/{id}/certificate</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateAttach</span> → <span class="font-mono text-xs">CertificateService.AttachCertificate</span> splits the pasted PEM into leaf + chain via <span class="font-mono text-xs">certutil.ParseCertificatesPEM</span>, checks the leaf's public key matches the stored private key (<span class="font-mono text-xs">certutil.MatchesKey</span>), then <span class="font-mono text-xs">applyIssuedCert</span> copies subject/issuer/signature/EKU straight off the parsed leaf onto the record — the issued certificate becomes ground truth for EKU from this point on, overwriting whatever was requested at CSR time.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Self-sign a pending CSR</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/{id}/self-sign</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateSelfSign</span> → <span class="font-mono text-xs">CertificateService.SelfSign</span> re-parses the stored CSR and key, calls <span class="font-mono text-xs">certutil.SelfSign</span> (issuer == subject, honours the record's stored EKU), then the same <span class="font-mono text-xs">applyIssuedCert</span> path as Attach.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Edit a certificate's chain</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /certificates/{id}/chain</span> (<span class="font-mono text-xs">requireAdmin</span>) → <span class="font-mono text-xs">handleCertificateChainUpdate</span> → <span class="font-mono text-xs">CertificateService.UpdateChain</span> parses the pasted chain with <span class="font-mono text-xs">certutil.ParseCertificatesPEM</span> (a hard failure here — unparseable input — is rejected outright), then <span class="font-mono text-xs">certutil.ValidateChain</span> checks that each intermediate actually signed the one before it, is marked as a CA, and isn't expired. A failed *validation* still saves — the admin sees exactly which link is broken instead of being locked out — only a parse failure blocks the save.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Download / export</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">GET /certificates/{id}/download</span> (<span class="font-mono text-xs">requireAuth</span>, format-gated inside the handler — admin for anything with key material, editor may still take a bare <span class="font-mono text-xs">.csr</span>) → <span class="font-mono text-xs">handleCertificateDownload</span> → <span class="font-mono text-xs">CertificateService.Export</span> → <span class="font-mono text-xs">certutil.Export</span>, which switches on format to produce PEM/DER/PKCS#7/PKCS#12/ZIP. A key-bearing download (<span class="font-mono text-xs">.key</span>, <span class="font-mono text-xs">.pfx</span>, <span class="font-mono text-xs">.zip</span>) is separately audited as <span class="font-mono text-xs">private_key_downloaded</span>.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Editing the Help page</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /help/edit</span> (<span class="font-mono text-xs">requireAdmin</span>) → <span class="font-mono text-xs">handleHelpEditSubmit</span> → <span class="font-mono text-xs">SiteContentService.SetHelpContent</span> → <span class="font-mono text-xs">SiteContentRepository.SetSiteContent</span> upserts a row in <span class="font-mono text-xs">site_content</span> keyed <span class="font-mono text-xs">"help"</span>. <span class="font-mono text-xs">GET /help</span> reads it back through <span class="font-mono text-xs">HelpContent</span>, falling back to the compiled-in <span class="font-mono text-xs">service.DefaultHelpContent</span> when no row exists yet, and renders it unescaped (<span class="font-mono text-xs">template.HTML</span>) — the one place in the app that does, which is why writing it is admin-only.
+        </p>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Switching light/dark</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">POST /theme</span> (public, no auth) → <span class="font-mono text-xs">handleThemeToggle</span> flips a plain <span class="font-mono text-xs">theme</span> cookie and redirects back to the page that was toggled from. There is no client-side theme script at all: <span class="font-mono text-xs">newView</span> reads the cookie via <span class="font-mono text-xs">themeFromRequest</span> on every request and stamps <span class="font-mono text-xs">&lt;html data-theme="..."&gt;</span> server-side, so there's nothing to flash-of-wrong-theme on load. The palette itself is CSS custom properties in <span class="font-mono text-xs">web/input.css</span> (<span class="font-mono text-xs">--color-*</span>, overridden under <span class="font-mono text-xs">[data-theme="light"]</span>), consumed through semantic Tailwind colors (<span class="font-mono text-xs">surface</span>, <span class="font-mono text-xs">card</span>, <span class="font-mono text-xs">line</span>, <span class="font-mono text-xs">ink</span>/<span class="font-mono text-xs">ink-1..6</span>, <span class="font-mono text-xs">hue-*</span>) defined in <span class="font-mono text-xs">tailwind.config.js</span> — templates use these instead of raw <span class="font-mono text-xs">slate</span>/<span class="font-mono text-xs">white</span> shades so both themes update from one place.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+    <h2 class="mb-3 text-sm font-semibold text-ink">Data model, in brief</h2>
+    <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      {{template "fact" dict "Label" "certificates" "Value" "One row per vault entry — domain.Certificate. Origin (generated/uploaded) + Status (pending/issued) describe the lifecycle; Subject/Issuer/EKU/fingerprint are captured once, at the moment it becomes issued."}}
+      {{template "fact" dict "Label" "users" "Value" "Role is one of admin/editor/viewer (domain.Role), each with CanWrite()/CanManageUsers() checked server-side on every write route."}}
+      {{template "fact" dict "Label" "sessions" "Value" "Opaque random tokens, SHA-256-hashed before storage — a database leak alone never yields a usable session."}}
+      {{template "fact" dict "Label" "audit_log" "Value" "Append-only, non-blocking (AuditService.Record never returns an error to its caller). Records successes plus failed logins specifically, not every attempt."}}
+      {{template "fact" dict "Label" "site_content" "Value" "Key/value rich-text blocks for admin-editable pages. One row so far: key = \"help\"."}}
+    </dl>
+  </section>
+
+</div>
+{{end}}

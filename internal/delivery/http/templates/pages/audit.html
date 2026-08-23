@@ -2,8 +2,8 @@
 <div class="space-y-6">
 
   <div>
-    <h1 class="text-2xl font-semibold text-white">Audit log</h1>
-    <p class="mt-1 text-sm text-slate-500">
+    <h1 class="text-2xl font-semibold text-ink">Audit log</h1>
+    <p class="mt-1 text-sm text-ink-5">
       Every login, account change, certificate mutation, and private-key download.
     </p>
   </div>
@@ -13,7 +13,7 @@
         hx-target="#audit-table"
         hx-swap="outerHTML"
         hx-trigger="input changed delay:300ms, change, submit"
-        class="flex flex-wrap items-end gap-3 rounded-xl border border-white/5 bg-slate-900/40 p-4">
+        class="flex flex-wrap items-end gap-3 rounded-xl border border-line/5 bg-card/40 p-4">
     <div>
       <label for="audit-actor" class="field-label mb-1 block">Actor email</label>
       <input id="audit-actor" type="search" name="actor" value="{{.Filter.ActorEmail}}" placeholder="anyone"
@@ -22,7 +22,7 @@
     <div>
       <label for="audit-action" class="field-label mb-1 block">Action</label>
       <select id="audit-action" name="action"
-              class="field-input px-3 py-2 text-sm">
+              class="field-select py-2 pl-3 pr-9 text-sm">
         <option value="">Any action</option>
         {{range .Actions}}
         <option value="{{.}}" {{if eq $.Filter.Action .}}selected{{end}}>{{.}}</option>

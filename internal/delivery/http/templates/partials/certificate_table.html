@@ -4,10 +4,10 @@
 {{end}}
 
 {{define "certificate-table"}}
-<div id="certificate-table" class="overflow-hidden rounded-xl border border-white/5 bg-slate-900/40">
+<div id="certificate-table" class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
   <div class="overflow-x-auto">
-    <table class="min-w-full divide-y divide-white/5 text-sm">
-      <thead class="bg-white/[0.02] text-xs uppercase tracking-wide text-slate-500">
+    <table class="min-w-full divide-y divide-line/5 text-sm">
+      <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
         <tr>
           <th scope="col" class="px-4 py-3 text-left font-medium">Common name</th>
           <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Owner</th>
@@ -17,53 +17,53 @@
           <th scope="col" class="px-4 py-3 text-right font-medium">Actions</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-white/5">
+      <tbody class="divide-y divide-line/5">
         {{range .Certificates}}
         {{$hs := .HealthStatus $.WarningDays $.CriticalDays}}
-        <tr id="certificate-{{.ID}}" class="transition hover:bg-white/[0.02]">
+        <tr id="certificate-{{.ID}}" class="transition hover:bg-line/[0.02]">
           <td class="px-4 py-3">
-            <a href="/certificates/{{.ID}}" class="font-medium text-slate-100 hover:text-sky-300">{{.CommonName}}</a>
-            <p class="text-xs text-slate-500">{{.SANSummary}}</p>
+            <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
+            <p class="text-xs text-ink-5">{{.SANSummary}}</p>
           </td>
-          <td class="hidden px-4 py-3 text-slate-400 md:table-cell">{{if .Owner}}{{.Owner}}{{else}}<span class="text-slate-600">—</span>{{end}}</td>
-          <td class="px-4 py-3 text-slate-300">{{.KeyLabel}}</td>
+          <td class="hidden px-4 py-3 text-ink-4 md:table-cell">{{if .Owner}}{{.Owner}}{{else}}<span class="text-ink-6">—</span>{{end}}</td>
+          <td class="px-4 py-3 text-ink-3">{{.KeyLabel}}</td>
           <td class="px-4 py-3">
             {{if eq .Status "issued"}}
               <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
                 <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
               </span>
-              <p class="mt-1 text-xs text-slate-500">{{.ExpiresIn}}</p>
+              <p class="mt-1 text-xs text-ink-5">{{.ExpiresIn}}</p>
             {{else}}
-              <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-slate-300 ring-1 ring-inset ring-slate-500/30">
+              <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">
                 <span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>Pending
               </span>
             {{end}}
             {{if .HealthFindings}}
               {{$findings := .HealthFindings}}
               <span class="ml-1 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset
-                           {{if hasWarningFinding $findings}}bg-amber-500/10 text-amber-300 ring-amber-500/25{{else}}bg-slate-500/10 text-slate-400 ring-slate-500/25{{end}}"
+                           {{if hasWarningFinding $findings}}bg-amber-500/10 text-hue-amber ring-amber-500/25{{else}}bg-slate-500/10 text-ink-4 ring-slate-500/25{{end}}"
                     title="{{len $findings}} certificate health note(s) — open the certificate for details">
                 {{len $findings}} note{{if ne (len $findings) 1}}s{{end}}
               </span>
             {{end}}
           </td>
-          <td class="hidden px-4 py-3 text-slate-500 sm:table-cell">{{.Origin.Label}}</td>
+          <td class="hidden px-4 py-3 text-ink-5 sm:table-cell">{{.Origin.Label}}</td>
           <td class="px-4 py-3">
             <div class="flex items-center justify-end gap-1">
               <a href="/certificates/{{.ID}}"
-                 class="btn-ghost text-sky-300 ring-sky-500/25 hover:bg-sky-500/10">Open</a>
+                 class="btn-ghost text-hue-sky ring-sky-500/25 hover:bg-sky-500/10">Open</a>
               <button type="button"
                       hx-delete="/certificates/{{.ID}}"
                       hx-confirm="Delete the certificate and any key material for {{.CommonName}}? This cannot be undone."
                       hx-target="#certificate-table"
                       hx-swap="outerHTML"
-                      class="btn-ghost text-rose-300/80 ring-rose-500/20 hover:bg-rose-500/10">Delete</button>
+                      class="btn-ghost text-hue-rose/80 ring-rose-500/20 hover:bg-rose-500/10">Delete</button>
             </div>
           </td>
         </tr>
         {{else}}
         <tr>
-          <td colspan="6" class="px-4 py-10 text-center text-slate-500">
+          <td colspan="6" class="px-4 py-10 text-center text-ink-5">
             No certificates yet — generate a CSR or upload one above.
           </td>
         </tr>

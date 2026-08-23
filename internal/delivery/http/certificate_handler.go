@@ -85,6 +85,7 @@ func (s *Server) handleCertificatesPage(w http.ResponseWriter, r *http.Request) 
 
 	view := newView(r, "Certificates", "certificates")
 	view["Certificates"] = certs
+	view["Groups"] = service.GroupByIssuer(certs)
 	view["Filter"] = filter
 	view["Encrypted"] = s.certs.KeyEncryptionEnabled()
 	view["WarningDays"] = warning
@@ -344,6 +345,37 @@ func (s *Server) handleCertificateAttach(w http.ResponseWriter, r *http.Request)
 		Kind:    "success",
 		Message: fmt.Sprintf("Certificate attached, valid until %s.", record.NotAfter.UTC().Format("2 Jan 2006")),
 	}
+	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
+}
+
+// handleCertificateChainUpdate replaces a certificate's stored intermediate
+// chain and reports whether it validates. Admin-only: the chain feeds every
+// download (.pem, .p7b, .pfx, .zip), so an edit here reaches every consumer
+// of this certificate immediately.
+func (s *Server) handleCertificateChainUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	record, result, err := s.certs.UpdateChain(r.Context(), id, r.PostFormValue("chain_pem"))
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditCertificateChainEdited, "certificate", record.ID.String(), record.CommonName)
+
+	flash := &flashMessage{Kind: "success", Message: "Chain saved — it validates: every intermediate signs the one before it."}
+	if !result.Valid {
+		flash = &flashMessage{Kind: "warning", Message: "Chain saved, but validation found problems: " + strings.Join(result.Issues, "; ")}
+	}
+	view := newView(r, "", "")
+	s.decorateCertificateView(r, view, record)
+	view["Flash"] = flash
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 

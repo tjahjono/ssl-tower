@@ -3,43 +3,43 @@
 
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold text-white">Certificate issuers</h1>
-      <p class="mt-1 text-sm text-slate-500">
+      <h1 class="text-2xl font-semibold text-ink">Certificate issuers</h1>
+      <p class="mt-1 text-sm text-ink-5">
         {{.Total}} certificate{{if ne .Total 1}}s{{end}} grouped by issuing CA — useful for spotting renewal concentration.
       </p>
     </div>
-    <a href="/certificates" class="text-xs text-sky-300 hover:text-sky-200">&larr; All certificates</a>
+    <a href="/certificates" class="text-xs text-hue-sky hover:text-hue-sky-strong">&larr; All certificates</a>
   </div>
 
   <div class="space-y-4">
     {{range .Groups}}
-    <section class="overflow-hidden rounded-xl border border-white/5 bg-slate-900/40">
-      <div class="flex items-center justify-between gap-4 border-b border-white/5 bg-white/[0.02] px-5 py-3">
-        <h2 class="truncate text-sm font-semibold text-white">{{.Issuer}}</h2>
-        <span class="shrink-0 text-xs text-slate-500">{{len .Certificates}} certificate{{if ne (len .Certificates) 1}}s{{end}}</span>
+    <section class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+      <div class="flex items-center justify-between gap-4 border-b border-line/5 bg-line/[0.02] px-5 py-3">
+        <h2 class="truncate text-sm font-semibold text-ink">{{.Issuer}}</h2>
+        <span class="shrink-0 text-xs text-ink-5">{{len .Certificates}} certificate{{if ne (len .Certificates) 1}}s{{end}}</span>
       </div>
-      <ul class="divide-y divide-white/5">
+      <ul class="divide-y divide-line/5">
         {{range .Certificates}}
         <li class="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
           <div class="min-w-0">
-            <a href="/certificates/{{.ID}}" class="font-medium text-slate-100 hover:text-sky-300">{{.CommonName}}</a>
-            {{if .Owner}}<p class="text-xs text-slate-500">{{.Owner}}</p>{{end}}
+            <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
+            {{if .Owner}}<p class="text-xs text-ink-5">{{.Owner}}</p>{{end}}
           </div>
           <div class="flex shrink-0 items-center gap-2">
             {{if eq .Status "issued"}}
-              <span class="tabular-nums text-xs text-slate-500">{{.ExpiresIn}}</span>
+              <span class="tabular-nums text-xs text-ink-5">{{.ExpiresIn}}</span>
             {{else}}
-              <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-slate-300 ring-1 ring-inset ring-slate-500/30">Pending</span>
+              <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">Pending</span>
             {{end}}
           </div>
         </li>
         {{else}}
-        <li class="px-5 py-6 text-center text-sm text-slate-500">No certificates in this group.</li>
+        <li class="px-5 py-6 text-center text-sm text-ink-5">No certificates in this group.</li>
         {{end}}
       </ul>
     </section>
     {{else}}
-    <p class="rounded-xl border border-dashed border-white/10 p-10 text-center text-sm text-slate-500">
+    <p class="rounded-xl border border-dashed border-line/10 p-10 text-center text-sm text-ink-5">
       No certificates yet — add one on the Certificates page to see it grouped by issuer here.
     </p>
     {{end}}

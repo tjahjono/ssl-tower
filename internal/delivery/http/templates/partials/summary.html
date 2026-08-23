@@ -13,19 +13,19 @@
     {{template "tile" dict "Label" "Expired" "Value" $s.Expired "Tone" "rose"}}
     {{template "tile" dict "Label" "Pending" "Value" $s.Pending "Tone" "slate"}}
   </div>
-  <p class="text-xs text-slate-500">Alerts last swept {{since .LastSweep}}.</p>
+  <p class="text-xs text-ink-5">Alerts last swept {{since .LastSweep}}.</p>
 </div>
 {{end}}
 
 {{define "tile"}}
-<div class="rounded-xl border border-white/5 bg-slate-900/60 p-4">
+<div class="rounded-xl border border-line/5 bg-card/60 p-4">
   <p class="field-label">{{.Label}}</p>
   <p class="mt-1 text-2xl font-semibold tabular-nums
-     {{if eq .Tone "emerald"}}text-emerald-300
-     {{else if eq .Tone "amber"}}text-amber-300
-     {{else if eq .Tone "orange"}}text-orange-300
-     {{else if eq .Tone "rose"}}text-rose-300
+     {{if eq .Tone "emerald"}}text-hue-emerald
+     {{else if eq .Tone "amber"}}text-hue-amber
+     {{else if eq .Tone "orange"}}text-hue-orange
+     {{else if eq .Tone "rose"}}text-hue-rose
      {{else if eq .Tone "fuchsia"}}text-fuchsia-300
-     {{else}}text-white{{end}}">{{.Value}}</p>
+     {{else}}text-ink{{end}}">{{.Value}}</p>
 </div>
 {{end}}

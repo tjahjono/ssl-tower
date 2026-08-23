@@ -1,18 +1,18 @@
 {{define "content"}}
 <div class="mx-auto max-w-sm">
   <div class="mb-6 text-center">
-    <h1 class="text-2xl font-semibold text-white">Set up two-factor authentication</h1>
-    <p class="mt-1 text-sm text-slate-500">Required before you can manage monitors or signing requests.</p>
+    <h1 class="text-2xl font-semibold text-ink">Set up two-factor authentication</h1>
+    <p class="mt-1 text-sm text-ink-5">Required before you can manage monitors or signing requests.</p>
   </div>
 
   {{if .Error}}
-    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-hue-rose-strong ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
   {{end}}
 
-  <div class="rounded-xl border border-white/5 bg-slate-900/40 p-6">
-    <ol class="mb-5 space-y-3 text-sm text-slate-400">
-      <li><span class="text-slate-200">1.</span> Scan this QR code with an authenticator app (Google Authenticator, 1Password, Authy).</li>
-      <li><span class="text-slate-200">2.</span> Enter the 6-digit code it shows.</li>
+  <div class="rounded-xl border border-line/5 bg-card/40 p-6">
+    <ol class="mb-5 space-y-3 text-sm text-ink-4">
+      <li><span class="text-ink-2">1.</span> Scan this QR code with an authenticator app (Google Authenticator, 1Password, Authy).</li>
+      <li><span class="text-ink-2">2.</span> Enter the 6-digit code it shows.</li>
     </ol>
 
     <div class="mb-5 flex justify-center">

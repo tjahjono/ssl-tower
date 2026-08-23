@@ -44,6 +44,17 @@ usage shown on a certificate's detail page is whatever was requested while it's 
 whatever the issued leaf actually carries once it's attached, self-signed, or uploaded — a CA is
 free to have honoured, ignored, or overridden the request.
 
+**Certificate chain editing**
+
+An admin can paste in or replace a certificate's intermediate chain from its detail
+page at any time — saving re-validates that each intermediate actually signed the one
+before it, that it's flagged as a CA, and that nothing in the chain has expired. A
+chain that doesn't parse as PEM is rejected outright; one that parses but fails
+validation still saves, with the specific problem (which link, and why) reported back,
+so you're never locked out of storing what you have while you sort out what's wrong
+with it. This chain is what every chain-including download (`.pem`, `.p7b`, `.pfx`,
+the full `.zip`) uses.
+
 **Weak-certificate flags**
 
 Every issued certificate is checked once, at the moment it's issued or uploaded, for hygiene
@@ -114,6 +125,22 @@ certificate or any key material.** The one carve-out is the bare signing request
 - Every login (success and failure), account change, certificate mutation, and
   private-key download is recorded with actor, timestamp, target, and client IP.
 - Admin-only, filterable by actor email, action, and date range.
+
+**Technical docs**
+
+- An admin-only reference page (`/admin/docs`, linked from the sidebar) laying out
+  how the app is put together — the layering, the middleware chain every request
+  passes through, and a handler → service → repository walk-through for every major
+  action (login, generate/import/upload/self-sign a certificate, edit a chain,
+  download, edit Help, switch theme). It's static content about the code, not
+  data from a database, so there's no admin-editable version of it the way Help has.
+
+**Light and dark mode**
+
+- A toggle at the bottom of the sidebar switches the whole app between a dark and a
+  light palette; the choice is remembered (a cookie) and applies on every subsequent
+  page load — no flash of the wrong theme, since it's decided server-side before the
+  page is sent, and no client-side JavaScript involved at all.
 
 ---
 
@@ -255,7 +282,9 @@ make test
 The certificate and encryption packages are covered directly: CSR generation and SAN
 handling, key/certificate matching, self-signing, every export format round-tripped
 back through a parser, weak-certificate health findings, issuer grouping, alert
-threshold classification and dedupe, and the AES-GCM sealer.
+threshold classification and dedupe, chain validation (real ECDSA chains generated
+with `x509.CreateCertificate`, covering a correctly signed chain, one in the wrong
+order, an expired intermediate, and an empty chain), and the AES-GCM sealer.
 
 ---
 
@@ -280,6 +309,11 @@ threshold classification and dedupe, and the AES-GCM sealer.
   usable session or password.
 - CSRF is enforced on every mutating request via a double-submit cookie, including
   the login form itself.
+- Chain validation checks signature linkage and CA flags between the certificates you
+  give it, not trust against any root store — an internal CA's self-signed root is
+  expected here and isn't treated as an error. A chain is saved even when validation
+  finds a problem; only a chain that doesn't parse as PEM is rejected. Both actions
+  are admin-only and audited.
 - Set `APP_ENCRYPTION_KEY` so private keys are encrypted at rest with AES-256-GCM.
 - The database holds private keys (and, once written, password hashes and session
   data); treat backups accordingly.

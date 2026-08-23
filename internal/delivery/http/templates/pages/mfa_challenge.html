@@ -1,15 +1,15 @@
 {{define "content"}}
 <div class="mx-auto max-w-sm">
   <div class="mb-6 text-center">
-    <h1 class="text-2xl font-semibold text-white">Verification code</h1>
-    <p class="mt-1 text-sm text-slate-500">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+    <h1 class="text-2xl font-semibold text-ink">Verification code</h1>
+    <p class="mt-1 text-sm text-ink-5">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
   </div>
 
   {{if .Error}}
-    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-hue-rose-strong ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
   {{end}}
 
-  <form method="post" action="/login/mfa" class="space-y-4 rounded-xl border border-white/5 bg-slate-900/40 p-6">
+  <form method="post" action="/login/mfa" class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="next" value="{{.Next}}">
     <div>
@@ -22,8 +22,8 @@
       Verify
     </button>
   </form>
-  <p class="mt-4 text-center text-xs text-slate-600">
-    <a href="/login" class="hover:text-slate-400">&larr; Back to sign in</a>
+  <p class="mt-4 text-center text-xs text-ink-6">
+    <a href="/login" class="hover:text-ink-4">&larr; Back to sign in</a>
   </p>
 </div>
 {{end}}

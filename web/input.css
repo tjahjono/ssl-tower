@@ -3,13 +3,75 @@
 @tailwind utilities;
 
 @layer base {
+  /* Theme tokens. Dark is the app's original, unchanged palette and is the
+     default (no attribute needed); [data-theme="light"] on <html> — set
+     server-side from the visitor's `theme` cookie, see theme_handler.go —
+     overrides each variable. Values are "R G B" triples (no commas, no
+     rgb() wrapper) so Tailwind's `rgb(var(--x) / <alpha-value>)` color
+     definitions in tailwind.config.js can apply an opacity modifier
+     (`bg-card/40`) the same way a built-in color does. Every template that
+     used to hard-code slate/white utility classes now goes through one of
+     these — see PLAN.md's theme phase for the full mapping — so this block
+     is the single place the palette is tuned. */
   :root {
     color-scheme: dark;
+
+    --color-surface: 2 6 23;       /* page bg, checkbox bg, field-input bg — slate-950 */
+    --color-card: 15 23 42;        /* card/section bg, dropdowns, aside — slate-900 */
+    --color-line: 255 255 255;     /* borders, rings, dividers, hover/wash bg — white, low opacity */
+
+    --color-ink: 255 255 255;      /* headings — white */
+    --color-ink-1: 241 245 249;    /* strong body text — slate-100 */
+    --color-ink-2: 226 232 240;    /* secondary body text — slate-200 */
+    --color-ink-3: 203 213 225;    /* default body text — slate-300 */
+    --color-ink-4: 148 163 184;    /* muted text — slate-400 */
+    --color-ink-5: 100 116 139;    /* dim/meta text — slate-500 */
+    --color-ink-6: 71 85 105;      /* faintest/placeholder text — slate-600 */
+
+    --color-hue-emerald: 110 231 183;        /* emerald-300 */
+    --color-hue-emerald-strong: 167 243 208; /* emerald-200 */
+    --color-hue-amber: 252 211 77;           /* amber-300 */
+    --color-hue-amber-strong: 253 230 138;   /* amber-200 */
+    --color-hue-orange: 253 186 116;         /* orange-300 */
+    --color-hue-rose: 253 164 175;           /* rose-300 */
+    --color-hue-rose-strong: 254 205 211;    /* rose-200 */
+    --color-hue-sky: 125 211 252;            /* sky-300 */
+    --color-hue-sky-strong: 186 230 253;     /* sky-200 */
   }
 
-  /* Keep the scrollbars in the dark palette instead of the OS default. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+
+    --color-surface: 255 255 255;
+    --color-card: 241 245 249;     /* slate-100 */
+    --color-line: 15 23 42;        /* slate-900, low opacity — a hairline, not solid */
+
+    --color-ink: 15 23 42;         /* slate-900 */
+    --color-ink-1: 30 41 59;       /* slate-800 */
+    --color-ink-2: 51 65 85;       /* slate-700 */
+    --color-ink-3: 71 85 105;      /* slate-600 */
+    --color-ink-4: 100 116 139;    /* slate-500 */
+    --color-ink-5: 71 85 105;      /* slate-600 — a touch darker than dark mode's ink-5 for contrast on white */
+    --color-ink-6: 148 163 184;    /* slate-400 */
+
+    /* "300"/"200" shades read fine on a near-black background but fail
+       contrast on white — darkened to "700"/"800" shades here. Backgrounds
+       and rings for these same badges/callouts stay untouched: a saturated
+       hue at 10-30% opacity reads as a pale tint on either background. */
+    --color-hue-emerald: 4 120 87;        /* emerald-700 */
+    --color-hue-emerald-strong: 6 95 70;  /* emerald-800 */
+    --color-hue-amber: 180 83 9;          /* amber-700 */
+    --color-hue-amber-strong: 146 64 14;  /* amber-800 */
+    --color-hue-orange: 194 65 12;        /* orange-700 */
+    --color-hue-rose: 190 18 60;          /* rose-700 */
+    --color-hue-rose-strong: 159 18 57;   /* rose-800 */
+    --color-hue-sky: 3 105 161;           /* sky-700 */
+    --color-hue-sky-strong: 7 89 133;     /* sky-800 */
+  }
+
+  /* Keep the scrollbars theme-aware instead of the OS default. */
   * {
-    scrollbar-color: theme("colors.slate.700") transparent;
+    scrollbar-color: theme("colors.slate.500") transparent;
     scrollbar-width: thin;
   }
 
@@ -19,7 +81,7 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background-color: theme("colors.slate.700");
+    background-color: theme("colors.slate.500");
     border: 3px solid transparent;
     border-radius: 9999px;
     background-clip: content-box;
@@ -42,27 +104,53 @@
      Sizing (px-*, py-*, text-*, w-full) stays per call site since that
      legitimately varies; color, ring, and focus state do not. */
   .field-label {
-    @apply text-xs font-medium uppercase tracking-wide text-slate-500;
+    @apply text-xs font-medium uppercase tracking-wide text-ink-5;
   }
   .field-input {
-    @apply rounded-lg border-0 bg-slate-950/60 text-slate-200 ring-1 ring-inset ring-white/10
-      placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500;
+    @apply rounded-lg border-0 bg-surface/60 text-ink-2 ring-1 ring-inset ring-line/10
+      placeholder:text-ink-6 focus:outline-none focus:ring-2 focus:ring-sky-500;
   }
   /* Same field, one shade lighter — for a filter bar or toolbar that sits
      directly on the page background rather than inside a card, where
-     .field-input's bg-slate-950 would nearly vanish. */
+     .field-input's bg-surface would nearly vanish. */
   .field-input-bare {
-    @apply field-input bg-slate-900/60;
+    @apply field-input bg-card/60;
+  }
+
+  /* A <select> only picks up .field-input's background/border/text color on
+     its closed box — the dropdown arrow is the browser's own OS-drawn
+     glyph, which ignores every one of our classes and looks like a bare,
+     unstyled control dropped into an otherwise custom-designed page.
+     `appearance-none` strips it; the replacement is a plain inline chevron,
+     colored a flat neutral gray (the same literal slate-500 already used
+     for the scrollbar thumb above) rather than a theme token, since it
+     reads fine unchanged on both the dark and light palette and a
+     background-image can't reference a CSS custom property or `currentColor`
+     the way a token class can. The opened listbox itself is still the
+     browser's native popup — `color-scheme` above at least keeps that
+     popup's own light/dark chrome in step with the page, but a fully
+     custom listbox would need JS this app doesn't otherwise use. */
+  .field-select {
+    @apply field-input appearance-none bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2364748b'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z' clip-rule='evenodd'/%3E%3C/svg%3E");
+    background-position: right 0.65rem center;
+    background-size: 1.15em;
+  }
+  .field-select-bare {
+    @apply field-select bg-card/60;
   }
 
   /* Buttons carry only color, weight, and transition here — radius, padding,
      and text size still vary by call site (a table-row action button is
-     smaller than a form's submit button). */
+     smaller than a form's submit button). btn-primary's text stays a fixed
+     near-black regardless of theme — it's set against a solid sky-500
+     button face either way, not the page background, so it never needs to
+     flip. */
   .btn-primary {
     @apply rounded-lg bg-sky-500 font-semibold text-slate-950 transition hover:bg-sky-400;
   }
   .btn-secondary {
-    @apply rounded-lg bg-white/5 font-medium text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-white/10;
+    @apply rounded-lg bg-line/5 font-medium text-ink-2 ring-1 ring-inset ring-line/10 transition hover:bg-line/10;
   }
   /* Small pill actions on table rows (Check, Pause, Open, Delete, Reset
      password) — shape and weight are shared, color and ring stay per call
@@ -87,8 +175,8 @@
   .chip-toggle-label {
     @apply inline-flex cursor-pointer items-center gap-1.5 rounded-full px-3 py-1.5 text-xs
       font-medium ring-1 ring-inset transition
-      bg-white/[0.02] text-slate-400 ring-white/10 hover:bg-white/5 hover:text-slate-300
-      peer-checked:bg-sky-500/10 peer-checked:text-sky-300 peer-checked:ring-sky-500/30
+      bg-line/[0.02] text-ink-4 ring-line/10 hover:bg-line/5 hover:text-ink-3
+      peer-checked:bg-sky-500/10 peer-checked:text-hue-sky peer-checked:ring-sky-500/30
       peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500;
   }
 }

@@ -551,6 +551,52 @@ func (s *CertificateService) AttachCertificate(ctx context.Context, id uuid.UUID
 	return record, nil
 }
 
+// UpdateChain replaces a certificate's stored intermediate chain and reports
+// whether the result actually validates: does each intermediate sign the
+// one before it, is each marked as a CA, and is nothing expired. The save
+// itself is not blocked on that result — an admin editing the chain by hand
+// (say, to fix a CA's incomplete bundle) needs to see what's wrong with
+// what they pasted, not be locked out of saving it — but a chain that
+// doesn't even parse as PEM certificates is rejected outright, same as
+// every other certificate-shaped input in this app.
+func (s *CertificateService) UpdateChain(ctx context.Context, id uuid.UUID, chainPEM string) (*domain.Certificate, certutil.ChainValidation, error) {
+	record, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, certutil.ChainValidation{}, err
+	}
+	if !record.HasCertificate() {
+		return nil, certutil.ChainValidation{}, domain.Invalid("chain", "attach or issue a certificate before editing its chain")
+	}
+
+	chainPEM = strings.TrimSpace(chainPEM)
+	var chainCerts []*x509.Certificate
+	normalized := ""
+	if chainPEM != "" {
+		chainCerts, err = certutil.ParseCertificatesPEM(chainPEM)
+		if err != nil {
+			return nil, certutil.ChainValidation{}, domain.Invalid("chain", "could not parse as PEM certificates: "+err.Error())
+		}
+		var b strings.Builder
+		for _, c := range chainCerts {
+			b.WriteString(certutil.EncodeCertificatePEM(c))
+		}
+		normalized = b.String()
+	}
+
+	leafCerts, err := certutil.ParseCertificatesPEM(record.CertificatePEM)
+	if err != nil || len(leafCerts) == 0 {
+		return nil, certutil.ChainValidation{}, fmt.Errorf("certificate service: stored leaf certificate is unreadable: %w", err)
+	}
+	result := certutil.ValidateChain(leafCerts[0], chainCerts)
+
+	record.ChainPEM = normalized
+	record.ChainLength = 1 + len(chainCerts)
+	if err := s.repo.Update(ctx, record); err != nil {
+		return nil, certutil.ChainValidation{}, err
+	}
+	return record, result, nil
+}
+
 // SelfSign issues a self-signed certificate for an existing pending request.
 func (s *CertificateService) SelfSign(ctx context.Context, id uuid.UUID, days int) (*domain.Certificate, error) {
 	record, err := s.repo.GetByID(ctx, id)

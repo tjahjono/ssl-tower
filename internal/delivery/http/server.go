@@ -105,6 +105,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /certificates/{id}", s.requireAuth(s.handleCertificateDetail))
 	s.mux.HandleFunc("DELETE /certificates/{id}", s.requireWrite(s.handleCertificateDelete))
 	s.mux.HandleFunc("POST /certificates/{id}/certificate", s.requireWrite(s.handleCertificateAttach))
+	s.mux.HandleFunc("POST /certificates/{id}/chain", s.requireAdmin(s.handleCertificateChainUpdate))
 	s.mux.HandleFunc("POST /certificates/{id}/self-sign", s.requireWrite(s.handleCertificateSelfSign))
 	s.mux.HandleFunc("GET /certificates/{id}/download", s.requireAuth(s.handleCertificateDownload))
 
@@ -131,6 +132,12 @@ func (s *Server) routes() {
 	// Audit log — admin only.
 	s.mux.HandleFunc("GET /audit", s.requireAdmin(s.handleAuditPage))
 	s.mux.HandleFunc("GET /audit/list", s.requireAdmin(s.handleAuditList))
+
+	// Technical docs — admin only.
+	s.mux.HandleFunc("GET /admin/docs", s.requireAdmin(s.handleAdminDocsPage))
+
+	// Theme preference — public, cosmetic, no session needed.
+	s.mux.HandleFunc("POST /theme", s.handleThemeToggle)
 }
 
 // --- shared view helpers ---------------------------------------------------
@@ -141,11 +148,13 @@ func newView(r *http.Request, title, nav string) map[string]any {
 		user = s
 	}
 	return map[string]any{
-		"Title":     title,
-		"Nav":       nav,
-		"Now":       time.Now().UTC(),
-		"User":      user,
-		"CSRFToken": csrfTokenFor(r),
+		"Title":       title,
+		"Nav":         nav,
+		"Now":         time.Now().UTC(),
+		"User":        user,
+		"CSRFToken":   csrfTokenFor(r),
+		"Theme":       themeFromRequest(r),
+		"CurrentPath": r.URL.RequestURI(),
 	}
 }
 

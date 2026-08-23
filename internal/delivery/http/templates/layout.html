@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full">
+<html lang="en" class="h-full" data-theme="{{.Theme}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,51 +9,88 @@
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
-<body class="h-full bg-slate-950 text-slate-300 antialiased selection:bg-sky-500/30"
+<body class="h-full bg-surface text-ink-3 antialiased selection:bg-sky-500/30"
       hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'>
 <div class="min-h-full lg:grid lg:grid-cols-[16rem_1fr]">
 
-  <aside class="flex border-b border-white/5 bg-slate-900/50 lg:min-h-screen lg:flex-col lg:border-b-0 lg:border-r">
-    <div class="flex items-center gap-3 px-5 py-5">
-      <span class="grid h-9 w-9 place-items-center rounded-lg bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30">
-        <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V7.5a4.5 4.5 0 1 0-9 0v3M6 10.5h12a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19v-7A1.5 1.5 0 0 1 6 10.5Z"/>
-        </svg>
-      </span>
-      <div>
-        <p class="text-sm font-semibold text-white">SSL Admin</p>
-        <p class="text-xs text-slate-500">Monitoring &amp; CSR toolkit</p>
+  <aside class="border-b border-line/5 bg-card/50 lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col lg:border-b-0 lg:border-r">
+    <div class="flex items-center justify-between gap-3 px-5 py-5">
+      <div class="flex items-center gap-3">
+        <span class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-500/15 text-hue-sky ring-1 ring-sky-500/30">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V7.5a4.5 4.5 0 1 0-9 0v3M6 10.5h12a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 18 20.5H6A1.5 1.5 0 0 1 4.5 19v-7A1.5 1.5 0 0 1 6 10.5Z"/>
+          </svg>
+        </span>
+        <div>
+          <p class="text-sm font-semibold text-ink">SSL Admin</p>
+          <p class="text-xs text-ink-5">Monitoring &amp; CSR toolkit</p>
+        </div>
       </div>
+      <button type="button" data-toggle-target="sidebar-panel"
+              data-toggle-label-open="Close menu" data-toggle-label-closed="Menu"
+              class="flex shrink-0 items-center gap-1.5 rounded-lg border border-line/10 px-3 py-1.5 text-xs font-medium text-ink-4 transition hover:bg-line/5 hover:text-ink-2 lg:hidden">
+        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5M3.75 17.25h16.5"/>
+        </svg>
+        <span data-toggle-label>Menu</span>
+      </button>
     </div>
 
-    <nav class="flex flex-1 gap-1 overflow-x-auto px-3 pb-4 lg:flex-col lg:overflow-visible">
-      {{template "nav-link" dict "Href" "/" "Label" "Dashboard" "Key" "dashboard" "Active" .Nav}}
-      {{template "nav-link" dict "Href" "/help" "Label" "Help" "Key" "help" "Active" .Nav}}
-      {{if .User}}
-        {{template "nav-link" dict "Href" "/certificates" "Label" "Certificates" "Key" "certificates" "Active" .Nav}}
-        {{template "nav-link" dict "Href" "/certificates/issuers" "Label" "Issuers" "Key" "issuers" "Active" .Nav}}
-        {{if .User.Role.CanManageUsers}}
-          {{template "nav-link" dict "Href" "/users" "Label" "Users" "Key" "users" "Active" .Nav}}
-          {{template "nav-link" dict "Href" "/audit" "Label" "Audit log" "Key" "audit" "Active" .Nav}}
+    <div id="sidebar-panel" class="hidden border-t border-line/5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:border-t-0">
+      <nav class="flex flex-col gap-1 px-3 py-3 lg:flex-1 lg:overflow-y-auto lg:pb-4">
+        {{template "nav-link" dict "Href" "/" "Label" "Dashboard" "Key" "dashboard" "Active" .Nav}}
+        {{if not (and .User .User.Role.CanManageUsers)}}
+          {{template "nav-link" dict "Href" "/help" "Label" "Help" "Key" "help" "Active" .Nav}}
         {{end}}
-      {{end}}
-    </nav>
+        {{if .User}}
+          {{template "nav-link" dict "Href" "/certificates" "Label" "Certificates" "Key" "certificates" "Active" .Nav}}
+          {{template "nav-link" dict "Href" "/certificates/issuers" "Label" "Issuers" "Key" "issuers" "Active" .Nav}}
+          {{if .User.Role.CanManageUsers}}
+            {{template "nav-link" dict "Href" "/users" "Label" "Users" "Key" "users" "Active" .Nav}}
+            {{template "nav-link" dict "Href" "/audit" "Label" "Audit log" "Key" "audit" "Active" .Nav}}
+            {{template "nav-link" dict "Href" "/admin/docs" "Label" "Technical docs" "Key" "admin-docs" "Active" .Nav}}
+            {{template "nav-link" dict "Href" "/help" "Label" "Help" "Key" "help" "Active" .Nav}}
+          {{end}}
+        {{end}}
+      </nav>
 
-    <div class="border-t border-white/5 px-5 py-4">
-      {{if .User}}
-        <p class="truncate text-sm font-medium text-slate-200">{{.User.Email}}</p>
-        <p class="mt-0.5 text-xs text-slate-500">{{.User.Role.Label}}</p>
-        <div class="mt-3 flex items-center gap-3">
-          <a href="/account/password" class="text-xs text-slate-400 hover:text-slate-200">Change password</a>
-          <button type="button" hx-post="/logout" hx-swap="none"
-                  class="text-xs text-rose-300/80 hover:text-rose-200">Sign out</button>
-        </div>
-      {{else}}
-        <a href="/login" class="flex items-center justify-center btn-secondary px-3 py-2 text-sm">
-          Sign in
-        </a>
-        <p class="mt-2 text-xs text-slate-600">Sign in to see the certificate vault and everything else.</p>
-      {{end}}
+      <div class="border-t border-line/5 px-5 py-3">
+        <form method="post" action="/theme" class="contents">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <input type="hidden" name="redirect" value="{{.CurrentPath}}">
+          <button type="submit"
+                  class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium text-ink-4 transition hover:bg-line/5 hover:text-ink-2">
+            {{if eq .Theme "light"}}
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9-5.998Z"/>
+            </svg>
+            <span>Switch to dark</span>
+            {{else}}
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-6.364-2.386 1.591-1.591M3 12h2.25m.386-6.364 1.591 1.591M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/>
+            </svg>
+            <span>Switch to light</span>
+            {{end}}
+          </button>
+        </form>
+      </div>
+
+      <div class="border-t border-line/5 px-5 py-4">
+        {{if .User}}
+          <p class="truncate text-sm font-medium text-ink-2">{{.User.Email}}</p>
+          <p class="mt-0.5 text-xs text-ink-5">{{.User.Role.Label}}</p>
+          <div class="mt-3 flex items-center gap-3">
+            <a href="/account/password" class="text-xs text-ink-4 hover:text-ink-2">Change password</a>
+            <button type="button" hx-post="/logout" hx-swap="none"
+                    class="text-xs text-hue-rose/80 hover:text-hue-rose-strong">Sign out</button>
+          </div>
+        {{else}}
+          <a href="/login" class="flex items-center justify-center btn-secondary px-3 py-2 text-sm">
+            Sign in
+          </a>
+          <p class="mt-2 text-xs text-ink-6">Sign in to see the certificate vault and everything else.</p>
+        {{end}}
+      </div>
     </div>
   </aside>
 
@@ -62,7 +99,7 @@
     <div class="mx-auto max-w-6xl">
       {{template "content" .}}
     </div>
-    <footer class="mx-auto mt-12 max-w-6xl border-t border-white/5 pt-4 text-xs text-slate-600">
+    <footer class="mx-auto mt-12 max-w-6xl border-t border-line/5 pt-4 text-xs text-ink-6">
       Go · Postgres · htmx · Tailwind — repository / service / delivery layers.
     </footer>
   </main>
@@ -72,8 +109,34 @@
 
 {{define "nav-link"}}
 <a href="{{.Href}}"
-   class="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition
-          {{if eq .Active .Key}}bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25{{else}}text-slate-400 hover:bg-white/5 hover:text-slate-200{{end}}">
-  {{.Label}}
+   class="flex shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition
+          {{if eq .Active .Key}}bg-sky-500/10 text-hue-sky ring-1 ring-inset ring-sky-500/25{{else}}text-ink-4 hover:bg-line/5 hover:text-ink-2{{end}}">
+  {{template "nav-icon" .Key}}
+  <span>{{.Label}}</span>
 </a>
+{{end}}
+
+{{/* One icon per nav Key, matched on the same string used for the active-tab
+     check above — keeps the icon in sync automatically if a link's Key ever
+     changes. currentColor means each icon always matches its link's own
+     active/inactive text color for free, no extra classes needed. */}}
+{{define "nav-icon"}}
+<svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+  {{if eq . "dashboard"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75"/>
+  {{else if eq . "certificates"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6l7-3z"/>
+  <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 12.5l2.5 2.5 4.5-5"/>
+  {{else if eq . "issuers"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M3 10.5l9-6 9 6M3 21h18M4.5 21V10.5M19.5 21V10.5M8 21v-4.5M12 21v-4.5M16 21v-4.5"/>
+  {{else if eq . "users"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M9 11a3 3 0 100-6 3 3 0 000 6zM3 20c0-3.314 2.686-6 6-6s6 2.686 6 6M17 11a3 3 0 100-6 3 3 0 000 6zM15 14.2A5.98 5.98 0 0121 20"/>
+  {{else if eq . "audit"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M9 3.75h6a1.5 1.5 0 011.5 1.5v.75h1.5A1.5 1.5 0 0119.5 7.5v12a1.5 1.5 0 01-1.5 1.5H6a1.5 1.5 0 01-1.5-1.5v-12A1.5 1.5 0 016 6h1.5v-.75a1.5 1.5 0 011.5-1.5zM9 12h6M9 15.75h6M9 8.25h6"/>
+  {{else if eq . "admin-docs"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75c-1.673-1.673-4.007-2.542-6.375-2.25a.75.75 0 00-.625.741v12.518c0 .414.336.75.75.75.031 0 .062-.002.093-.006 2.164-.263 4.223.478 5.782 1.997a.75.75 0 001.05 0c1.559-1.519 3.618-2.26 5.782-1.997a.75.75 0 00.843-.744V5.241a.75.75 0 00-.625-.741c-2.368-.292-4.702.577-6.375 2.25zM12 6.75v13.5"/>
+  {{else if eq . "help"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519a3 3 0 114.242 4.242c-.203.179-.43.326-.67.442A2.25 2.25 0 0012 14.25v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z"/>
+  {{end}}
+</svg>
 {{end}}

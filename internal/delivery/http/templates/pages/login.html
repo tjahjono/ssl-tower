@@ -1,18 +1,18 @@
 {{define "content"}}
 <div class="mx-auto max-w-xs">
   <div class="mb-6 text-center">
-    <h1 class="text-2xl font-semibold text-white">Sign in</h1>
-    <p class="mt-1 text-sm text-slate-500">Manage monitors and signing requests.</p>
+    <h1 class="text-2xl font-semibold text-ink">Sign in</h1>
+    <p class="mt-1 text-sm text-ink-5">Manage monitors and signing requests.</p>
   </div>
 
   {{if .Notice}}
-    <div class="mb-4 rounded-xl bg-sky-500/10 px-4 py-3 text-sm text-sky-200 ring-1 ring-inset ring-sky-500/25">{{.Notice}}</div>
+    <div class="mb-4 rounded-xl bg-sky-500/10 px-4 py-3 text-sm text-hue-sky-strong ring-1 ring-inset ring-sky-500/25">{{.Notice}}</div>
   {{end}}
   {{if .Error}}
-    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+    <div class="mb-4 rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-hue-rose-strong ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
   {{end}}
 
-  <form method="post" action="/login" class="space-y-4 rounded-xl border border-white/5 bg-slate-900/40 p-6">
+  <form method="post" action="/login" class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <input type="hidden" name="next" value="{{.Next}}">
     <div>

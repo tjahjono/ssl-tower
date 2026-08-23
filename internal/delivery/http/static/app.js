@@ -6,8 +6,8 @@
 
   // Plain tab switching for the certificate vault's generate/upload panels —
   // no framework, just toggling a couple of utility classes and [hidden].
-  var TAB_ACTIVE = ["ring-1", "ring-inset", "ring-sky-500/25", "bg-sky-500/10", "text-sky-300"];
-  var TAB_INACTIVE = ["text-slate-400"];
+  var TAB_ACTIVE = ["ring-1", "ring-inset", "ring-sky-500/25", "bg-sky-500/10", "text-hue-sky"];
+  var TAB_INACTIVE = ["text-ink-4"];
 
   document.addEventListener("click", function (event) {
     var tabButton = event.target.closest("[data-tab-button]");
@@ -24,6 +24,26 @@
       group.querySelectorAll("[data-tab-panel]").forEach(function (panel) {
         panel.classList.toggle("hidden", panel.getAttribute("data-tab-panel") !== name);
       });
+      return;
+    }
+
+    // Generic show/hide toggle — e.g. the Certificates page's "Add a
+    // certificate" button revealing its intake tabs. A button carries
+    // data-toggle-target="<id>"; clicking it flips [hidden] on that id and
+    // updates the button's own label from data-toggle-label-open/closed if
+    // present.
+    var toggle = event.target.closest("[data-toggle-target]");
+    if (toggle) {
+      var panel = document.getElementById(toggle.getAttribute("data-toggle-target"));
+      if (!panel) return;
+      var isHidden = panel.classList.toggle("hidden");
+      var label = toggle.querySelector("[data-toggle-label]");
+      if (label) {
+        label.textContent = isHidden
+          ? toggle.getAttribute("data-toggle-label-closed")
+          : toggle.getAttribute("data-toggle-label-open");
+      }
+      if (!isHidden) panel.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
 
