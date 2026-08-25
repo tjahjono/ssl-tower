@@ -18,16 +18,23 @@
         </p>
       {{end}}
     </div>
-    {{if eq $c.Status "issued"}}
-      <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset {{badgeClass .HealthStatus}}">
-        <span class="h-1.5 w-1.5 rounded-full {{dotClass .HealthStatus}}"></span>
-        {{if $c.SelfSigned}}Self-signed{{else}}Issued{{end}} · {{$c.ExpiresIn}}
-      </span>
-    {{else}}
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2.5 py-1 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">
-        <span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>Awaiting certificate
-      </span>
-    {{end}}
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="button"
+              hx-post="/certificates/{{$c.ID}}/validate" hx-target="#certificate-detail" hx-swap="outerHTML"
+              class="btn-secondary px-3 py-1.5 text-xs">
+        Validate
+      </button>
+      {{if eq $c.Status "issued"}}
+        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset {{badgeClass .HealthStatus}}">
+          <span class="h-1.5 w-1.5 rounded-full {{dotClass .HealthStatus}}"></span>
+          {{if $c.SelfSigned}}Self-signed{{else}}Issued{{end}} · {{$c.ExpiresIn}}
+        </span>
+      {{else}}
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2.5 py-1 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">
+          <span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>Awaiting certificate
+        </span>
+      {{end}}
+    </div>
   </div>
 
   <div class="grid gap-6 lg:grid-cols-3">

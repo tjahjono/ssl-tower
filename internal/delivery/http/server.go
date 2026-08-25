@@ -106,6 +106,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /certificates/{id}", s.requireWrite(s.handleCertificateDelete))
 	s.mux.HandleFunc("POST /certificates/{id}/certificate", s.requireWrite(s.handleCertificateAttach))
 	s.mux.HandleFunc("POST /certificates/{id}/chain", s.requireAdmin(s.handleCertificateChainUpdate))
+	s.mux.HandleFunc("POST /certificates/{id}/validate", s.requireWrite(s.handleCertificateValidate))
 	s.mux.HandleFunc("POST /certificates/{id}/self-sign", s.requireWrite(s.handleCertificateSelfSign))
 	s.mux.HandleFunc("GET /certificates/{id}/download", s.requireAuth(s.handleCertificateDownload))
 

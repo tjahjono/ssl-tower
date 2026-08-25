@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
@@ -595,6 +596,127 @@ func (s *CertificateService) UpdateChain(ctx context.Context, id uuid.UUID, chai
 		return nil, certutil.ChainValidation{}, err
 	}
 	return record, result, nil
+}
+
+// IntegrityReport is the result of ValidateIntegrity: everything that was
+// actually checked (Checks, only populated when there was something on file
+// to check it against) and anything found wrong (Issues — a non-empty list
+// means Valid is false). Unlike ChainValidation this can speak to material
+// ValidateChain never sees: the private key and the signing request.
+type IntegrityReport struct {
+	Valid  bool
+	Checks []string
+	Issues []string
+}
+
+// ValidateIntegrity re-derives whether everything on file for a certificate
+// record is mutually consistent — private key against certificate and CSR,
+// each intermediate against the one before it, the chain's terminal entry
+// against being a self-signed root — without writing anything back. It is a
+// pure read, safe to run on demand as often as an operator wants a fresh
+// answer, unlike UpdateChain which only re-validates as a side effect of a
+// save.
+func (s *CertificateService) ValidateIntegrity(ctx context.Context, id uuid.UUID) (IntegrityReport, error) {
+	record, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return IntegrityReport{}, err
+	}
+
+	var report IntegrityReport
+	note := func(format string, args ...any) {
+		report.Issues = append(report.Issues, fmt.Sprintf(format, args...))
+	}
+	check := func(format string, args ...any) {
+		report.Checks = append(report.Checks, fmt.Sprintf(format, args...))
+	}
+
+	var key crypto.Signer
+	if record.HasPrivateKey() {
+		keyPEM, err := s.PrivateKey(record)
+		if err != nil {
+			note("private key could not be decrypted: %s", err)
+		} else if k, err := certutil.ParsePrivateKeyPEM(keyPEM); err != nil {
+			note("stored private key does not parse: %s", err)
+		} else {
+			key = k
+			check("private key parses correctly")
+		}
+	}
+
+	var csr *x509.CertificateRequest
+	if csrPEM := strings.TrimSpace(record.CSRPEM); csrPEM != "" {
+		if c, err := certutil.ParseCSRPEM(csrPEM); err != nil {
+			note("signing request does not parse or its signature does not verify: %s", err)
+		} else {
+			csr = c
+			check("signing request's own signature verifies")
+			if key != nil {
+				if certutil.MatchesCSRKey(csr, key) {
+					check("private key matches the signing request")
+				} else {
+					note("the private key on file does not match the signing request's public key")
+				}
+			}
+		}
+	}
+
+	if record.HasCertificate() {
+		leafCerts, err := certutil.ParseCertificatesPEM(record.CertificatePEM)
+		if err != nil || len(leafCerts) == 0 {
+			note("stored certificate does not parse: %v", err)
+			report.Valid = len(report.Issues) == 0
+			return report, nil
+		}
+		leaf := leafCerts[0]
+		check("certificate parses correctly")
+
+		if key != nil {
+			if certutil.MatchesKey(leaf, key) {
+				check("private key matches the issued certificate")
+			} else {
+				note("the private key on file does not match the issued certificate's public key")
+			}
+		}
+
+		var chainCerts []*x509.Certificate
+		if chainPEM := strings.TrimSpace(record.ChainPEM); chainPEM != "" {
+			chainCerts, err = certutil.ParseCertificatesPEM(chainPEM)
+			if err != nil {
+				note("stored chain does not parse: %s", err)
+			}
+		}
+
+		chainResult := certutil.ValidateChain(leaf, chainCerts)
+		if chainResult.Valid {
+			if len(chainCerts) == 0 {
+				check("no intermediates on file — nothing further to check the certificate against")
+			} else {
+				check("all %d intermediate(s) sign the one before them and are valid CAs", len(chainCerts))
+			}
+		} else {
+			report.Issues = append(report.Issues, chainResult.Issues...)
+		}
+
+		if len(chainCerts) > 0 {
+			root := chainCerts[len(chainCerts)-1]
+			rootLabel := root.Subject.CommonName
+			if rootLabel == "" {
+				rootLabel = root.Subject.String()
+			}
+			if root.CheckSignatureFrom(root) == nil && root.BasicConstraintsValid && root.IsCA {
+				check("chain ends in a self-signed root (%s)", rootLabel)
+			} else {
+				check("chain does not end in a self-signed root (%s) — fine for an internal PKI whose root isn't distributed here, just noting it", rootLabel)
+			}
+		}
+	}
+
+	if len(report.Checks) == 0 && len(report.Issues) == 0 {
+		note("nothing is on file yet for this certificate — add a private key, signing request, or certificate first")
+	}
+
+	report.Valid = len(report.Issues) == 0
+	return report, nil
 }
 
 // SelfSign issues a self-signed certificate for an existing pending request.

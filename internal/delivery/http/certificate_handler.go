@@ -379,6 +379,30 @@ func (s *Server) handleCertificateChainUpdate(w http.ResponseWriter, r *http.Req
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 
+// handleCertificateValidate re-checks that everything on file for this
+// certificate — private key, signing request, issued certificate, and chain
+// — is mutually consistent, without changing anything. It's the "Validate"
+// button in the page header: a fresh answer on demand, as opposed to
+// UpdateChain's re-validation, which only happens as a side effect of a save.
+func (s *Server) handleCertificateValidate(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	report, err := s.certs.ValidateIntegrity(r.Context(), id)
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+
+	flash := &flashMessage{Kind: "success", Message: "Validation passed — " + strings.Join(report.Checks, "; ") + "."}
+	if !report.Valid {
+		flash = &flashMessage{Kind: "error", Message: "Validation found problems: " + strings.Join(report.Issues, "; ") + "."}
+	}
+	s.certificateDetailResponse(w, r, id, flash)
+}
+
 // handleCertificateSelfSign issues a self-signed certificate for a pending request.
 func (s *Server) handleCertificateSelfSign(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
