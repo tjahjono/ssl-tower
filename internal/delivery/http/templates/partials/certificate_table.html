@@ -14,6 +14,7 @@
           <th scope="col" class="px-4 py-3 text-left font-medium">Key</th>
           <th scope="col" class="px-4 py-3 text-left font-medium">Status</th>
           <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Origin</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Trust</th>
           <th scope="col" class="px-4 py-3 text-right font-medium">Actions</th>
         </tr>
       </thead>
@@ -48,6 +49,16 @@
             {{end}}
           </td>
           <td class="hidden px-4 py-3 text-ink-5 sm:table-cell">{{.Origin.Label}}</td>
+          <td class="hidden px-4 py-3 sm:table-cell">
+            {{$trust := .TrustClass}}
+            {{if eq $trust "internal"}}
+              <span class="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-hue-sky ring-1 ring-inset ring-sky-500/25">Internal</span>
+            {{else if eq $trust "external"}}
+              <span class="inline-flex items-center rounded-full bg-fuchsia-500/10 px-2 py-0.5 text-xs font-medium text-hue-fuchsia ring-1 ring-inset ring-fuchsia-500/25">External</span>
+            {{else}}
+              <span class="text-xs text-ink-6">—</span>
+            {{end}}
+          </td>
           <td class="px-4 py-3">
             <div class="flex items-center justify-end gap-1">
               <a href="/certificates/{{.ID}}"
@@ -63,7 +74,7 @@
         </tr>
         {{else}}
         <tr>
-          <td colspan="6" class="px-4 py-10 text-center text-ink-5">
+          <td colspan="7" class="px-4 py-10 text-center text-ink-5">
             No certificates yet — generate a CSR or upload one above.
           </td>
         </tr>

@@ -421,6 +421,51 @@ func SelfSign(csr *x509.CertificateRequest, key crypto.Signer, validDays int, ek
 	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
 }
 
+// SignWithCA issues a certificate for csr, signed by caCert using caKey — the
+// internal-CA counterpart to SelfSign, used when an admin has uploaded a
+// Root CA to sign with instead of self-signing. Unlike a self-signed leaf
+// (which doubles as its own trust anchor, hence IsCA/CertSign), the result
+// here is a true end-entity certificate: IsCA is false and KeyUsage excludes
+// CertSign, since this certificate must never itself be usable to sign
+// anything else. validDays is silently capped so the leaf can't outlive the
+// CA that's about to sign it.
+func SignWithCA(csr *x509.CertificateRequest, caCert *x509.Certificate, caKey crypto.Signer, validDays int, ekuKeys []string) (*x509.Certificate, string, error) {
+	if validDays <= 0 {
+		validDays = 365
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, "", fmt.Errorf("certutil: serial: %w", err)
+	}
+	now := time.Now().UTC()
+	notAfter := now.AddDate(0, 0, validDays)
+	if notAfter.After(caCert.NotAfter) {
+		notAfter = caCert.NotAfter
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               csr.Subject,
+		DNSNames:              csr.DNSNames,
+		IPAddresses:           csr.IPAddresses,
+		EmailAddresses:        csr.EmailAddresses,
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           x509ExtKeyUsages(ekuKeys),
+		BasicConstraintsValid: true,
+		IsCA:                  false,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, csr.PublicKey, caKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("certutil: sign with ca: %w", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, "", fmt.Errorf("certutil: parse ca-signed certificate: %w", err)
+	}
+	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+}
+
 // MatchesKey reports whether a certificate's public key belongs to the key.
 func MatchesKey(cert *x509.Certificate, key crypto.Signer) bool {
 	return publicKeyMatches(cert.PublicKey, key)

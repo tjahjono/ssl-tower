@@ -3,13 +3,19 @@
 
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-semibold text-ink">Certificate issuers</h1>
+      <h1 class="text-2xl font-semibold text-ink">Issuers &amp; Root CAs</h1>
       <p class="mt-1 text-sm text-ink-5">
         {{.Total}} certificate{{if ne .Total 1}}s{{end}} grouped by issuing CA — useful for spotting renewal concentration.
       </p>
     </div>
     <a href="/certificates" class="text-xs text-hue-sky hover:text-hue-sky-strong">&larr; All certificates</a>
   </div>
+
+  {{if .User.Role.CanManageUsers}}
+  <div id="root-ca-section">
+    {{template "root-ca-section" .}}
+  </div>
+  {{end}}
 
   <div class="space-y-4">
     {{range .Groups}}
@@ -46,3 +52,4 @@
   </div>
 </div>
 {{end}}
+

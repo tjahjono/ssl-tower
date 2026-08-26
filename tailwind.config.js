@@ -39,6 +39,8 @@ module.exports = {
         "hue-rose-strong": "rgb(var(--color-hue-rose-strong) / <alpha-value>)",
         "hue-sky": "rgb(var(--color-hue-sky) / <alpha-value>)",
         "hue-sky-strong": "rgb(var(--color-hue-sky-strong) / <alpha-value>)",
+        "hue-fuchsia": "rgb(var(--color-hue-fuchsia) / <alpha-value>)",
+        "hue-fuchsia-strong": "rgb(var(--color-hue-fuchsia-strong) / <alpha-value>)",
       },
     },
   },

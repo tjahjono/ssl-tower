@@ -29,11 +29,6 @@ const maxUploadBytes = 32 << 20 // 32 MiB
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	summary, err := s.certs.Summary(ctx)
-	if err != nil {
-		s.serverError(w, err)
-		return
-	}
 	certs, err := s.certs.List(ctx, domain.CertificateFilter{})
 	if err != nil {
 		s.serverError(w, err)
@@ -41,23 +36,68 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	warning, critical := s.certs.Thresholds()
 
-	attention := make([]*domain.Certificate, 0, len(certs))
+	// Internal, External, Pending partition every certificate exactly once
+	// (Pending is anything not yet issued) — the same tri-state split the
+	// vault's own Trust column uses. Per the confirmed "page-level tabs,
+	// everything scoped" design, each trust class gets its own tile row,
+	// attention list, certificate table, and CA breakdown, rather than one
+	// shared dashboard with just the table split.
+	var internalCerts, externalCerts, pendingCerts []*domain.Certificate
 	for _, c := range certs {
-		if c.Status == domain.CertIssued && c.HealthStatus(warning, critical) != domain.StatusOK {
-			attention = append(attention, c)
+		switch c.TrustClass() {
+		case domain.TrustInternal:
+			internalCerts = append(internalCerts, c)
+		case domain.TrustExternal:
+			externalCerts = append(externalCerts, c)
+		default:
+			pendingCerts = append(pendingCerts, c)
 		}
 	}
 
 	view := newView(r, "Dashboard", "dashboard")
-	view["Summary"] = summary
-	view["Attention"] = attention
-	view["Certificates"] = certs
-	view["Groups"] = service.GroupByIssuer(certs)
+	view["Internal"] = newDashboardScope(internalCerts, warning, critical)
+	view["External"] = newDashboardScope(externalCerts, warning, critical)
+	view["Pending"] = newDashboardScope(pendingCerts, warning, critical)
 	view["WarningDays"] = warning
 	view["CriticalDays"] = critical
 	view["LastSweep"] = s.sweeper.LastRun()
 	view["SweepInterval"] = humanDuration(s.sweeper.Interval())
 	s.render.Page(w, http.StatusOK, "dashboard", view)
+}
+
+// dashboardScope is everything one trust-class tab on the dashboard needs —
+// its own certificate list, attention list, health tile summary, and CA
+// breakdown, computed from a slice already filtered to that trust class.
+type dashboardScope struct {
+	Certificates []*domain.Certificate
+	Attention    []*domain.Certificate
+	Summary      domain.Summary
+	Groups       []service.IssuerGroup
+}
+
+func newDashboardScope(certs []*domain.Certificate, warning, critical int) dashboardScope {
+	scope := dashboardScope{Certificates: certs, Groups: service.GroupByIssuer(certs)}
+	for _, c := range certs {
+		scope.Summary.Total++
+		if c.Status != domain.CertIssued {
+			scope.Summary.Pending++
+			continue
+		}
+		switch c.HealthStatus(warning, critical) {
+		case domain.StatusExpiring:
+			scope.Summary.Expiring++
+			scope.Attention = append(scope.Attention, c)
+		case domain.StatusCritical:
+			scope.Summary.Critical++
+			scope.Attention = append(scope.Attention, c)
+		case domain.StatusExpired:
+			scope.Summary.Expired++
+			scope.Attention = append(scope.Attention, c)
+		default:
+			scope.Summary.OK++
+		}
+	}
+	return scope
 }
 
 // handleSummaryPartial refreshes the dashboard tiles for htmx polling.
@@ -114,9 +154,15 @@ func (s *Server) handleCertificateList(w http.ResponseWriter, r *http.Request) {
 
 // handleCertificateIssuers groups issued certificates by issuing CA — which
 // certificate authorities the fleet depends on, and how concentrated that
-// dependency is.
+// dependency is — and, for an admin, lists the Root CAs uploaded for
+// internal signing (v1.1) alongside an upload form.
 func (s *Server) handleCertificateIssuers(w http.ResponseWriter, r *http.Request) {
 	certs, err := s.certs.List(r.Context(), domain.CertificateFilter{})
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	rootCAs, err := s.certs.ListRootCAs(r.Context())
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -124,7 +170,57 @@ func (s *Server) handleCertificateIssuers(w http.ResponseWriter, r *http.Request
 	view := newView(r, "Issuers", "issuers")
 	view["Groups"] = service.GroupByIssuer(certs)
 	view["Total"] = len(certs)
+	view["RootCAs"] = rootCAs
+	view["Encrypted"] = s.certs.KeyEncryptionEnabled()
 	s.render.Page(w, http.StatusOK, "certificate_issuers", view)
+}
+
+// rootCASectionResponse re-renders the Root CA upload form + list after a
+// create/delete, the same OOB-flash pattern as every other admin action.
+func (s *Server) rootCASectionResponse(w http.ResponseWriter, r *http.Request, flash *flashMessage) {
+	rootCAs, err := s.certs.ListRootCAs(r.Context())
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	view := newView(r, "", "")
+	view["RootCAs"] = rootCAs
+	view["Encrypted"] = s.certs.KeyEncryptionEnabled()
+	view["Flash"] = flash
+	s.render.Partial(w, http.StatusOK, "root-ca-section-response", view)
+}
+
+// handleRootCAUpload stores an admin-uploaded Root CA (certificate + private
+// key) so it can be picked when signing a pending CSR (handleCertificateSignWithRootCA).
+func (s *Server) handleRootCAUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	ca, err := s.certs.UploadRootCA(r.Context(), r.PostFormValue("name"), r.PostFormValue("certificate_pem"), r.PostFormValue("private_key_pem"))
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.rootCASectionResponse(w, r, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditRootCAUploaded, "root_ca", ca.ID.String(), ca.Name)
+	s.rootCASectionResponse(w, r, &flashMessage{Kind: "success", Message: fmt.Sprintf("%q uploaded — it's now available to sign pending certificates.", ca.Name)})
+}
+
+// handleRootCADelete removes an uploaded Root CA. Certificates it already
+// signed are unaffected — see the root_cas migration's ON DELETE SET NULL.
+func (s *Server) handleRootCADelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.certs.DeleteRootCA(r.Context(), id); err != nil {
+		msg, _ := errorMessage(err)
+		s.rootCASectionResponse(w, r, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditRootCADeleted, "root_ca", id.String(), "")
+	s.rootCASectionResponse(w, r, &flashMessage{Kind: "info", Message: "Root CA removed. Certificates it already signed are unaffected."})
 }
 
 // handleCertificateGenerate mints a key pair plus CSR and sends the user to
@@ -433,6 +529,43 @@ func (s *Server) handleCertificateSelfSign(w http.ResponseWriter, r *http.Reques
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 
+// handleCertificateSignWithRootCA issues a pending certificate using one of
+// this app's own uploaded Root CAs — the "Sign with Root CA" counterpart to
+// handleCertificateSelfSign, right next to it in the pending-certificate UI.
+func (s *Server) handleCertificateSignWithRootCA(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	rootCAID, err := uuid.Parse(r.PostFormValue("root_ca_id"))
+	if err != nil {
+		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "choose a Root CA to sign with"})
+		return
+	}
+	days, _ := strconv.Atoi(r.PostFormValue("days"))
+	if days <= 0 {
+		days = 365
+	}
+	record, err := s.certs.SignWithRootCA(r.Context(), id, rootCAID, days)
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditCertificateSignedByCA, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
+	view := newView(r, "", "")
+	s.decorateCertificateView(r, view, record)
+	view["Flash"] = &flashMessage{
+		Kind:    "success",
+		Message: fmt.Sprintf("Certificate issued for %d days, signed by your Root CA.", days),
+	}
+	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
+}
+
 // handleCertificateDelete removes a certificate and its key material.
 func (s *Server) handleCertificateDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
@@ -514,6 +647,7 @@ func certificateFilterFrom(r *http.Request) domain.CertificateFilter {
 		Search: q.Get("q"),
 		Status: domain.CertLifecycle(q.Get("status")),
 		Origin: domain.CertOrigin(q.Get("origin")),
+		Trust:  q.Get("trust"),
 	}
 }
 
@@ -529,6 +663,13 @@ func (s *Server) decorateCertificateView(r *http.Request, view map[string]any, r
 	view["HealthStatus"] = record.HealthStatus(warning, critical)
 	if shared, err := s.certs.SharedFingerprint(r.Context(), record); err == nil {
 		view["SharedWith"] = shared
+	}
+	// Only a pending, in-app-generated CSR can be signed at all (self-sign or
+	// Root CA) — no need to load the Root CA list for every other cert.
+	if record.Origin == domain.OriginGenerated && record.Status != domain.CertIssued {
+		if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
+			view["RootCAs"] = rootCAs
+		}
 	}
 }
 

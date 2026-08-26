@@ -1,0 +1,143 @@
+# Swarm deployment manifest — `docker stack deploy` reads this file, not
+# docker-compose.yml. The two are deliberately separate: docker-compose.yml
+# is for local development (`docker compose up --build`, plain environment
+# variables, Compose builds the image itself); Swarm mode can't build images
+# at deploy time and needs every credential to arrive as a Docker secret
+# (a file mounted under /run/secrets/<name> inside the container) rather than
+# a plain environment variable, which `docker service inspect` and
+# `docker stack ps` would otherwise happily print in full.
+#
+# One-time setup, in order:
+#
+#   1. Make sure this node is a Swarm manager:
+#        docker swarm init
+#
+#   2. Build and tag the app image — Swarm deploys an image reference, it
+#      does not build from source:
+#        docker build -t ssl-tower:1.1 .
+#      (pushed to a registry first if deploying to a multi-node cluster —
+#      a single-node swarm can use the local image directly.)
+#
+#   3. Create every secret below. `make docker-secrets` does this for you,
+#      generating random values for the ones that don't already have an
+#      obvious source (see the Makefile target); to do it by hand:
+#
+#        openssl rand -base64 32 | docker secret create ssl_tower_encryption_key -
+#        openssl rand -base64 32 | docker secret create ssl_tower_session_secret -
+#        openssl rand -base64 24 | docker secret create ssl_tower_admin_password -
+#        openssl rand -base64 24 | docker secret create ssl_tower_db_password -
+#
+#      DATABASE_URL is one connection string carrying the DB password inline
+#      (this app has no separate DB_PASSWORD field), so it has to be built
+#      from that *same* password rather than generated separately — decide
+#      the password first, then create both secrets from it:
+#
+#        DB_PASSWORD='...'   # whatever you generated above
+#        printf '%s' "$DB_PASSWORD" | docker secret create ssl_tower_db_password -
+#        printf 'postgres://ssl_tower:%s@postgres:5432/ssl_generator?sslmode=disable' "$DB_PASSWORD" \
+#          | docker secret create ssl_tower_database_url -
+#
+#      (`make docker-secrets` does this for you, from one generated
+#      password, so the two never drift apart.) SMTP_PASSWORD and
+#      TEAMS_WEBHOOK_URL are optional — only create + uncomment them below if
+#      you're enabling that alert channel.
+#
+#   4. Deploy:
+#        docker stack deploy -c docker-stack.yml ssltower
+#
+# Updating a secret's value requires creating a new secret under a new name
+# and updating this file's reference to it, then re-deploying — Docker
+# secrets are immutable once created, by design.
+
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ssl_tower
+      POSTGRES_DB: ssl_generator
+      POSTGRES_PASSWORD_FILE: /run/secrets/ssl_tower_db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    secrets:
+      - ssl_tower_db_password
+    networks:
+      - backend
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  app:
+    image: ssl-tower:1.1
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: ":8080"
+      DB_MAX_CONNS: "10"
+      DB_CONNECT_TIMEOUT: "10s"
+      ALERT_SWEEP_INTERVAL: "12h"
+      EXPIRY_WARNING_DAYS: "30"
+      EXPIRY_CRITICAL_DAYS: "7"
+      EXPIRY_FINAL_DAYS: "1"
+      # Alerting stays opt-in: leave SMTP_HOST/TEAMS_WEBHOOK_URL_FILE unset
+      # (as below) and the app logs a boot-time warning and sends nothing.
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_USERNAME: ""
+      ALERT_EMAIL_FROM: ""
+      ALERT_EMAIL_TO: ""
+      SESSION_IDLE_TIMEOUT: "12h"
+      SESSION_ABSOLUTE_TIMEOUT: "720h"
+      COOKIE_SECURE: "true"
+      ADMIN_EMAIL: "admin@example.com"
+      # Every *_FILE var below is this app's Docker-secrets convention (see
+      # internal/config/config.go's applySecretFiles): at boot it reads the
+      # named file's trimmed contents into the plain env var with the same
+      # prefix, so DATABASE_URL_FILE here becomes DATABASE_URL inside the
+      # process exactly as if it had been set directly.
+      DATABASE_URL_FILE: /run/secrets/ssl_tower_database_url
+      APP_ENCRYPTION_KEY_FILE: /run/secrets/ssl_tower_encryption_key
+      SESSION_SECRET_FILE: /run/secrets/ssl_tower_session_secret
+      ADMIN_INITIAL_PASSWORD_FILE: /run/secrets/ssl_tower_admin_password
+      # Optional alert-channel secrets — uncomment both the env var here and
+      # the matching entries in `secrets:` (service + top-level) once you've
+      # created them, e.g.:
+      #   SMTP_PASSWORD_FILE: /run/secrets/ssl_tower_smtp_password
+      #   TEAMS_WEBHOOK_URL_FILE: /run/secrets/ssl_tower_teams_webhook
+    secrets:
+      - ssl_tower_database_url
+      - ssl_tower_encryption_key
+      - ssl_tower_session_secret
+      - ssl_tower_admin_password
+    ports:
+      - "8080:8080"
+    networks:
+      - backend
+    depends_on:
+      - postgres
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+networks:
+  backend:
+
+volumes:
+  pgdata:
+
+secrets:
+  ssl_tower_db_password:
+    external: true
+  ssl_tower_database_url:
+    external: true
+  ssl_tower_encryption_key:
+    external: true
+  ssl_tower_session_secret:
+    external: true
+  ssl_tower_admin_password:
+    external: true
+  # ssl_tower_smtp_password:
+  #   external: true
+  # ssl_tower_teams_webhook:
+  #   external: true

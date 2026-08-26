@@ -80,6 +80,13 @@ type Config struct {
 	// warning) when either is left empty.
 	AdminEmail           string
 	AdminInitialPassword string
+
+	// TicketSLADays is the age (in days, counted from approval, not
+	// submission) after which an open certificate request ticket is flagged
+	// overdue on the ticket queue. Confirmed at 3 days for both internal and
+	// external tickets — required, not defaulted, so an operator has to make
+	// a deliberate choice rather than silently inherit a value they never saw.
+	TicketSLADays int
 }
 
 // Load reads configuration from the environment, loading .env into the
@@ -90,6 +97,9 @@ type Config struct {
 // above). There is no third category: nothing here is silently filled in
 // with a value that isn't in .env or the environment.
 func Load() (*Config, error) {
+	if err := applySecretFiles(secretFileKeys); err != nil {
+		return nil, fmt.Errorf("config: reading secret files: %w", err)
+	}
 	if err := loadDotEnv(".env"); err != nil {
 		return nil, fmt.Errorf("config: reading .env: %w", err)
 	}
@@ -155,6 +165,8 @@ func Load() (*Config, error) {
 
 		AdminEmail:           optionalString("ADMIN_EMAIL"),
 		AdminInitialPassword: optionalString("ADMIN_INITIAL_PASSWORD"),
+
+		TicketSLADays: reqInt("TICKET_SLA_DAYS"),
 	}
 
 	if len(errs) > 0 {
@@ -168,6 +180,57 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: EXPIRY_FINAL_DAYS must be <= EXPIRY_CRITICAL_DAYS")
 	}
 	return cfg, nil
+}
+
+// secretFileKeys lists every config key that may be supplied via Docker
+// secrets instead of a plain environment variable — the credential-bearing
+// values in this app: the vault's own encryption key, the database
+// connection string (it carries the DB password inline — there is no
+// separate DB_PASSWORD field), the session-signing secret, the bootstrap
+// admin password, the SMTP password, and the Teams webhook URL (a bearer
+// credential in URL form). Everything else (ports, thresholds, hostnames,
+// the admin email) is plain configuration, not a secret, and stays a normal
+// env var.
+var secretFileKeys = []string{
+	"DATABASE_URL",
+	"APP_ENCRYPTION_KEY",
+	"SESSION_SECRET",
+	"ADMIN_INITIAL_PASSWORD",
+	"SMTP_PASSWORD",
+	"TEAMS_WEBHOOK_URL",
+}
+
+// applySecretFiles implements the standard Docker/Kubernetes secrets-as-files
+// convention: for each key in keys, if <KEY>_FILE names a file (e.g.
+// /run/secrets/app_encryption_key, the path Docker mounts a swarm secret
+// at), its trimmed contents become the value of KEY — but only when KEY
+// itself isn't already set. That ordering matters: it means a real
+// environment variable set directly (by the shell, `docker compose`'s
+// environment: block, systemd, whatever) always wins outright, exactly as
+// loadDotEnv's own env-wins-over-.env rule works below; a *_FILE secret
+// beats .env, since running this before loadDotEnv means loadDotEnv's own
+// "skip if already set" check will leave whatever this function wrote
+// alone. A container that sets neither the plain var nor *_FILE falls
+// through to .env or a required-value error exactly as before — this is
+// purely additive, no existing deployment's behavior changes.
+func applySecretFiles(keys []string) error {
+	for _, key := range keys {
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		path := strings.TrimSpace(os.Getenv(key + "_FILE"))
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("%s_FILE=%s: %w", key, path, err)
+		}
+		if err := os.Setenv(key, strings.TrimSpace(string(data))); err != nil {
+			return fmt.Errorf("setting %s from %s_FILE: %w", key, key, err)
+		}
+	}
+	return nil
 }
 
 // loadDotEnv reads a .env file at path, if one exists, and copies each key

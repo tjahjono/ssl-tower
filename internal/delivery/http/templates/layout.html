@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{.Title}} · SSL Admin</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <title>{{.Title}} · SSL Tower</title>
+  <link rel="stylesheet" href="{{asset "/static/app.css"}}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="{{asset "/static/htmx.min.js"}}" defer></script>
+  <script src="{{asset "/static/app.js"}}" defer></script>
 </head>
 <body class="h-full bg-surface text-ink-3 antialiased selection:bg-sky-500/30"
       hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'>
@@ -22,7 +22,7 @@
           </svg>
         </span>
         <div>
-          <p class="text-sm font-semibold text-ink">SSL Admin</p>
+          <p class="text-sm font-semibold text-ink">SSL Tower</p>
           <p class="text-xs text-ink-5">Monitoring &amp; CSR toolkit</p>
         </div>
       </div>
@@ -43,8 +43,15 @@
           {{template "nav-link" dict "Href" "/help" "Label" "Help" "Key" "help" "Active" .Nav}}
         {{end}}
         {{if .User}}
-          {{template "nav-link" dict "Href" "/certificates" "Label" "Certificates" "Key" "certificates" "Active" .Nav}}
-          {{template "nav-link" dict "Href" "/certificates/issuers" "Label" "Issuers" "Key" "issuers" "Active" .Nav}}
+          {{if .User.Role.CanRequestCertificates}}
+            {{template "nav-link" dict "Href" "/requests" "Label" "My requests" "Key" "requests" "Active" .Nav}}
+          {{else}}
+            {{template "nav-link" dict "Href" "/certificates" "Label" "Certificates" "Key" "certificates" "Active" .Nav}}
+            {{template "nav-link" dict "Href" "/certificates/issuers" "Label" "Issuers" "Key" "issuers" "Active" .Nav}}
+          {{end}}
+          {{if .User.Role.CanWrite}}
+            {{template "nav-link" dict "Href" "/tickets" "Label" "Tickets" "Key" "tickets" "Active" .Nav}}
+          {{end}}
           {{if .User.Role.CanManageUsers}}
             {{template "nav-link" dict "Href" "/users" "Label" "Users" "Key" "users" "Active" .Nav}}
             {{template "nav-link" dict "Href" "/audit" "Label" "Audit log" "Key" "audit" "Active" .Nav}}
@@ -129,6 +136,10 @@
   <path stroke-linecap="round" stroke-linejoin="round" d="M8.5 12.5l2.5 2.5 4.5-5"/>
   {{else if eq . "issuers"}}
   <path stroke-linecap="round" stroke-linejoin="round" d="M3 10.5l9-6 9 6M3 21h18M4.5 21V10.5M19.5 21V10.5M8 21v-4.5M12 21v-4.5M16 21v-4.5"/>
+  {{else if eq . "requests"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 3.75h6M8.25 3.75h7.5a2.25 2.25 0 012.25 2.25v13.5a2.25 2.25 0 01-2.25 2.25h-7.5A2.25 2.25 0 016 19.5V6a2.25 2.25 0 012.25-2.25zM9.75 3.75v2.25h4.5V3.75"/>
+  {{else if eq . "tickets"}}
+  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 8.25A2.25 2.25 0 016 6h12a2.25 2.25 0 012.25 2.25v1.5a1.5 1.5 0 000 3v1.5A2.25 2.25 0 0118 16.5H6a2.25 2.25 0 01-2.25-2.25v-1.5a1.5 1.5 0 000-3v-1.5z"/>
   {{else if eq . "users"}}
   <path stroke-linecap="round" stroke-linejoin="round" d="M9 11a3 3 0 100-6 3 3 0 000 6zM3 20c0-3.314 2.686-6 6-6s6 2.686 6 6M17 11a3 3 0 100-6 3 3 0 000 6zM15 14.2A5.98 5.98 0 0121 20"/>
   {{else if eq . "audit"}}

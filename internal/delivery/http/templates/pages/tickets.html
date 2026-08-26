@@ -1,0 +1,39 @@
+{{define "content"}}
+<div class="space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-ink">Tickets</h1>
+    <p class="mt-1 text-sm text-ink-5">
+      {{.OpenCount}} ticket{{if ne .OpenCount 1}}s{{end}} still open.
+      Internal tickets are approved and signed in one action; external tickets move to "in
+      progress" on approval and are fulfilled once the certificate a public CA issued is attached.
+      SLA: {{.SLADays}} day{{if ne .SLADays 1}}s{{end}} since approval.
+    </p>
+  </div>
+
+  <form id="ticket-filters"
+        hx-get="/tickets/list"
+        hx-target="#ticket-table"
+        hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms, change, submit"
+        class="flex flex-wrap items-center gap-3">
+    <input type="search" name="q" value="{{.Filter.Search}}" placeholder="Search common name, requester, or owner"
+           class="field-input-bare min-w-0 flex-1 px-3 py-2 text-sm">
+    <select name="status" class="field-select-bare py-2 pl-3 pr-9 text-sm">
+      <option value="">All statuses</option>
+      <option value="pending" {{if eq .Filter.Status "pending"}}selected{{end}}>Pending approval</option>
+      <option value="in_progress" {{if eq .Filter.Status "in_progress"}}selected{{end}}>In progress</option>
+      <option value="fulfilled" {{if eq .Filter.Status "fulfilled"}}selected{{end}}>Fulfilled</option>
+      <option value="rejected" {{if eq .Filter.Status "rejected"}}selected{{end}}>Rejected</option>
+      <option value="cancelled" {{if eq .Filter.Status "cancelled"}}selected{{end}}>Cancelled</option>
+    </select>
+    <select name="trust" class="field-select-bare py-2 pl-3 pr-9 text-sm">
+      <option value="">Internal &amp; external</option>
+      <option value="internal" {{if eq .Filter.TrustClass "internal"}}selected{{end}}>Internal only</option>
+      <option value="external" {{if eq .Filter.TrustClass "external"}}selected{{end}}>External only</option>
+    </select>
+  </form>
+
+  {{template "ticket-table" .}}
+</div>
+{{end}}

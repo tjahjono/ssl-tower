@@ -91,6 +91,23 @@ func (s *Server) handleUserResetPassword(w http.ResponseWriter, r *http.Request)
 	s.usersTableResponse(w, r, flash)
 }
 
+// handleUserResetMFA clears an account's MFA enrollment, forcing it back
+// through setup at next login, and signs it out everywhere in the meantime.
+func (s *Server) handleUserResetMFA(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	flash := &flashMessage{Kind: "success", Message: "MFA reset — the account is signed out everywhere and must enroll a new authenticator at next login."}
+	if err := s.auth.ResetMFA(r.Context(), id); err != nil {
+		msg, _ := errorMessage(err)
+		flash = &flashMessage{Kind: "error", Message: msg}
+	} else {
+		s.recordAudit(r, domain.AuditUserMFAReset, "user", id.String(), "")
+	}
+	s.usersTableResponse(w, r, flash)
+}
+
 // handleUserDelete removes an account, refusing to delete the last admin.
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)

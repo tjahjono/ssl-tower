@@ -1,0 +1,84 @@
+{{define "request-table-response"}}
+{{template "request-table" .}}
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "request-table"}}
+<div id="request-table" class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-line/5 text-sm">
+      <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
+        <tr>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Common name</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Requester</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Type</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Trust</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Status</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Age</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-line/5">
+        {{range .Tickets}}
+        <tr id="request-{{.ID}}" class="transition hover:bg-line/[0.02]">
+          <td class="px-4 py-3">
+            <span class="font-medium text-ink-1">{{.CommonName}}</span>
+            {{if .Justification}}<p class="text-xs text-ink-5">{{truncate 80 .Justification}}</p>{{end}}
+          </td>
+          <td class="hidden px-4 py-3 text-ink-4 md:table-cell">{{.RequesterEmail}}</td>
+          <td class="hidden px-4 py-3 text-ink-4 sm:table-cell">{{.Type.Label}}</td>
+          <td class="hidden px-4 py-3 sm:table-cell">
+            {{if eq .TrustClass "internal"}}
+              <span class="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-hue-sky ring-1 ring-inset ring-sky-500/25">Internal</span>
+            {{else}}
+              <span class="inline-flex items-center rounded-full bg-fuchsia-500/10 px-2 py-0.5 text-xs font-medium text-hue-fuchsia ring-1 ring-inset ring-fuchsia-500/25">External</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3">{{template "request-status-badge" .}}</td>
+          <td class="px-4 py-3 text-right text-xs text-ink-5">
+            {{.AgeDays}}d
+            {{if .Status.Open}}
+              <button type="button"
+                      hx-post="/requests/{{.ID}}/cancel"
+                      hx-confirm="Cancel this request?"
+                      hx-target="#request-table" hx-swap="outerHTML"
+                      class="ml-2 text-hue-rose/80 hover:text-hue-rose-strong">Cancel</button>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="px-4 py-10 text-center text-ink-5">
+            No requests yet — submit one above.
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+
+{{/* Shared by the requester's own list and the editor/admin ticket queue. */}}
+{{define "request-status-badge"}}
+{{if eq .Status "pending"}}
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">
+    <span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>Pending approval
+  </span>
+{{else if eq .Status "in_progress"}}
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-hue-amber ring-1 ring-inset ring-amber-500/30">
+    <span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span>In progress
+  </span>
+{{else if eq .Status "fulfilled"}}
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-hue-emerald ring-1 ring-inset ring-emerald-500/30">
+    <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Fulfilled{{if not .Delivered}} · not delivered{{end}}
+  </span>
+{{else if eq .Status "rejected"}}
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-rose-500/10 px-2 py-0.5 text-xs font-medium text-hue-rose ring-1 ring-inset ring-rose-500/30">
+    <span class="h-1.5 w-1.5 rounded-full bg-rose-400"></span>Rejected
+  </span>
+{{else}}
+  <span class="inline-flex items-center gap-1.5 rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-4 ring-1 ring-inset ring-slate-500/30">
+    <span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>Cancelled
+  </span>
+{{end}}
+{{end}}

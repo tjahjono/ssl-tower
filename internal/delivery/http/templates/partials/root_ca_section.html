@@ -1,0 +1,73 @@
+{{define "root-ca-section-response"}}
+<div id="root-ca-section">{{template "root-ca-section" .}}</div>
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "root-ca-section"}}
+<section class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+  <div class="border-b border-line/5 bg-line/[0.02] px-5 py-3">
+    <h2 class="text-sm font-semibold text-ink">Root CAs</h2>
+    <p class="mt-0.5 text-xs text-ink-5">
+      Upload an existing CA's certificate and private key to sign pending certificates
+      internally, without waiting on an outside CA. Admin-only — a Root CA's key can mint a
+      certificate for any name.
+    </p>
+  </div>
+
+  <ul class="divide-y divide-line/5">
+    {{range .RootCAs}}
+    <li class="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+      <div class="min-w-0">
+        <p class="truncate font-medium text-ink-1">{{.Name}}</p>
+        <p class="truncate text-xs text-ink-5">{{.CommonName}} · {{.PublicKeyAlgorithm}} {{.KeySize}} bit</p>
+      </div>
+      <div class="flex shrink-0 items-center gap-3">
+        <span class="tabular-nums text-xs text-ink-5">{{.ExpiresIn}}</span>
+        <button type="button"
+                hx-delete="/certificates/issuers/root-cas/{{.ID}}"
+                hx-confirm="Remove {{.Name}}? Certificates it already signed keep working, but you won't be able to sign new ones with it."
+                hx-target="#root-ca-section"
+                hx-swap="outerHTML"
+                class="btn-ghost text-hue-rose/80 ring-rose-500/20 hover:bg-rose-500/10">
+          Delete
+        </button>
+      </div>
+    </li>
+    {{else}}
+    <li class="px-5 py-6 text-center text-sm text-ink-5">No Root CAs uploaded yet.</li>
+    {{end}}
+  </ul>
+
+  <details class="border-t border-line/5">
+    <summary class="cursor-pointer list-none px-5 py-3 text-sm font-medium text-hue-sky hover:text-hue-sky-strong">
+      Upload a Root CA
+    </summary>
+    <form hx-post="/certificates/issuers/root-cas" hx-target="#root-ca-section" hx-swap="outerHTML"
+          class="space-y-3 px-5 pb-5">
+      <div>
+        <label for="root-ca-name" class="field-label mb-1 block">Name</label>
+        <input id="root-ca-name" name="name" type="text" required placeholder="e.g. Acme Internal CA"
+               class="field-input w-full px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label for="root-ca-cert" class="field-label mb-1 block">CA certificate (PEM)</label>
+        <textarea id="root-ca-cert" name="certificate_pem" rows="6" required spellcheck="false"
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                  class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
+      </div>
+      <div>
+        <label for="root-ca-key" class="field-label mb-1 block">CA private key (PEM)</label>
+        <textarea id="root-ca-key" name="private_key_pem" rows="6" required spellcheck="false"
+                  placeholder="-----BEGIN PRIVATE KEY-----"
+                  class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
+        {{if .Encrypted}}
+        <p class="mt-1.5 text-xs text-ink-6">Encrypted at rest with AES-256-GCM before it reaches Postgres.</p>
+        {{end}}
+      </div>
+      <button type="submit" class="btn-primary px-4 py-2 text-sm">
+        Upload Root CA
+      </button>
+    </form>
+  </details>
+</section>
+{{end}}

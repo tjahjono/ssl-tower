@@ -148,6 +148,21 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// requireRequester additionally demands the requester role — the
+// self-service "submit a certificate request ticket" pages. Deliberately
+// exclusive to that tier: an admin/editor works tickets from the /tickets
+// queue instead, which talks to the same CertificateRequestService but
+// through the approve/reject/fulfill actions rather than submission.
+func (s *Server) requireRequester(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if !s.currentUser(r).Role.CanRequestCertificates() {
+			s.forbidden(w, r)
+			return
+		}
+		next(w, r)
+	})
+}
+
 // enforceOnboarding sends a signed-in user straight to the forced step they
 // haven't completed yet, whatever page they actually asked for. Returns true
 // when it redirected (the caller must stop handling the request).

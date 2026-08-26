@@ -26,6 +26,7 @@ type Server struct {
 	auth         *service.AuthService
 	audit        *service.AuditService
 	content      *service.SiteContentService
+	requests     *service.CertificateRequestService
 	log          *slog.Logger
 	cookieSecure bool
 }
@@ -37,6 +38,7 @@ func NewServer(
 	auth *service.AuthService,
 	audit *service.AuditService,
 	content *service.SiteContentService,
+	requests *service.CertificateRequestService,
 	log *slog.Logger,
 	cookieSecure bool,
 ) (*Server, error) {
@@ -52,6 +54,7 @@ func NewServer(
 		auth:         auth,
 		audit:        audit,
 		content:      content,
+		requests:     requests,
 		log:          log,
 		cookieSecure: cookieSecure,
 	}
@@ -98,6 +101,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /certificates", s.requireAuth(s.handleCertificatesPage))
 	s.mux.HandleFunc("GET /certificates/list", s.requireAuth(s.handleCertificateList))
 	s.mux.HandleFunc("GET /certificates/issuers", s.requireAuth(s.handleCertificateIssuers))
+	// Root CA management (v1.1) — admin-only, same tier as chain editing and
+	// private-key downloads: a Root CA's key can mint a certificate for any
+	// name, which is a materially bigger blast radius than any single
+	// certificate's own key.
+	s.mux.HandleFunc("POST /certificates/issuers/root-cas", s.requireAdmin(s.handleRootCAUpload))
+	s.mux.HandleFunc("DELETE /certificates/issuers/root-cas/{id}", s.requireAdmin(s.handleRootCADelete))
 	s.mux.HandleFunc("POST /certificates/generate", s.requireWrite(s.handleCertificateGenerate))
 	s.mux.HandleFunc("POST /certificates/import", s.requireWrite(s.handleCertificateImport))
 	s.mux.HandleFunc("POST /certificates/import-csr", s.requireWrite(s.handleCertificateImportCSR))
@@ -108,6 +117,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /certificates/{id}/chain", s.requireAdmin(s.handleCertificateChainUpdate))
 	s.mux.HandleFunc("POST /certificates/{id}/validate", s.requireWrite(s.handleCertificateValidate))
 	s.mux.HandleFunc("POST /certificates/{id}/self-sign", s.requireWrite(s.handleCertificateSelfSign))
+	s.mux.HandleFunc("POST /certificates/{id}/sign-with-root-ca", s.requireWrite(s.handleCertificateSignWithRootCA))
 	s.mux.HandleFunc("GET /certificates/{id}/download", s.requireAuth(s.handleCertificateDownload))
 
 	// Authentication
@@ -128,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /users", s.requireAdmin(s.handleUserCreate))
 	s.mux.HandleFunc("POST /users/{id}/role", s.requireAdmin(s.handleUserRoleUpdate))
 	s.mux.HandleFunc("POST /users/{id}/reset-password", s.requireAdmin(s.handleUserResetPassword))
+	s.mux.HandleFunc("POST /users/{id}/reset-mfa", s.requireAdmin(s.handleUserResetMFA))
 	s.mux.HandleFunc("DELETE /users/{id}", s.requireAdmin(s.handleUserDelete))
 
 	// Audit log — admin only.
@@ -139,6 +150,24 @@ func (s *Server) routes() {
 
 	// Theme preference — public, cosmetic, no session needed.
 	s.mux.HandleFunc("POST /theme", s.handleThemeToggle)
+
+	// Certificate request tickets (v1.2) — requesters submit and view their
+	// own tickets (and everyone else's, per the confirmed "all tickets"
+	// visibility); editors/admins work the queue.
+	s.mux.HandleFunc("GET /requests", s.requireRequester(s.handleRequestsPage))
+	s.mux.HandleFunc("GET /requests/list", s.requireRequester(s.handleRequestsList))
+	s.mux.HandleFunc("POST /requests", s.requireRequester(s.handleRequestSubmit))
+	s.mux.HandleFunc("POST /requests/{id}/cancel", s.requireAuth(s.handleRequestCancel))
+
+	s.mux.HandleFunc("GET /tickets", s.requireWrite(s.handleTicketsPage))
+	s.mux.HandleFunc("GET /tickets/list", s.requireWrite(s.handleTicketsList))
+	s.mux.HandleFunc("GET /tickets/{id}", s.requireWrite(s.handleTicketDetail))
+	s.mux.HandleFunc("POST /tickets/{id}/approve-internal", s.requireWrite(s.handleTicketApproveInternal))
+	s.mux.HandleFunc("POST /tickets/{id}/approve-external", s.requireWrite(s.handleTicketApproveExternal))
+	s.mux.HandleFunc("POST /tickets/{id}/fulfill-external", s.requireWrite(s.handleTicketFulfillExternal))
+	s.mux.HandleFunc("POST /tickets/{id}/reject", s.requireWrite(s.handleTicketReject))
+	s.mux.HandleFunc("POST /tickets/{id}/cancel", s.requireWrite(s.handleRequestCancel))
+	s.mux.HandleFunc("POST /tickets/{id}/deliver", s.requireWrite(s.handleTicketDeliver))
 }
 
 // --- shared view helpers ---------------------------------------------------

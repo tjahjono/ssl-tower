@@ -4,7 +4,7 @@
      hx-trigger="every 60s, refresh from:body"
      hx-swap="outerHTML"
      class="space-y-3">
-  <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+  <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
     {{$s := .Summary}}
     {{template "tile" dict "Label" "Certificates" "Value" $s.Total "Tone" "slate"}}
     {{template "tile" dict "Label" "Healthy" "Value" $s.OK "Tone" "emerald"}}
@@ -12,6 +12,8 @@
     {{template "tile" dict "Label" "Critical" "Value" $s.Critical "Tone" "orange"}}
     {{template "tile" dict "Label" "Expired" "Value" $s.Expired "Tone" "rose"}}
     {{template "tile" dict "Label" "Pending" "Value" $s.Pending "Tone" "slate"}}
+    {{template "tile" dict "Label" "Internal" "Value" $s.Internal "Tone" "sky"}}
+    {{template "tile" dict "Label" "External" "Value" $s.External "Tone" "fuchsia"}}
   </div>
   <p class="text-xs text-ink-5">Alerts last swept {{since .LastSweep}}.</p>
 </div>
@@ -25,7 +27,8 @@
      {{else if eq .Tone "amber"}}text-hue-amber
      {{else if eq .Tone "orange"}}text-hue-orange
      {{else if eq .Tone "rose"}}text-hue-rose
-     {{else if eq .Tone "fuchsia"}}text-fuchsia-300
+     {{else if eq .Tone "sky"}}text-hue-sky
+     {{else if eq .Tone "fuchsia"}}text-hue-fuchsia
      {{else}}text-ink{{end}}">{{.Value}}</p>
 </div>
 {{end}}

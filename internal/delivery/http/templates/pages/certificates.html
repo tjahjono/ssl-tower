@@ -357,6 +357,11 @@
       <option value="generated" {{if eq .Filter.Origin "generated"}}selected{{end}}>Generated only</option>
       <option value="uploaded" {{if eq .Filter.Origin "uploaded"}}selected{{end}}>Uploaded only</option>
     </select>
+    <select name="trust" class="field-select-bare py-2 pl-3 pr-9 text-sm">
+      <option value="">Internal &amp; external</option>
+      <option value="internal" {{if eq .Filter.Trust "internal"}}selected{{end}}>Internal only</option>
+      <option value="external" {{if eq .Filter.Trust "external"}}selected{{end}}>External only</option>
+    </select>
   </form>
 
   {{template "certificate-table" .}}

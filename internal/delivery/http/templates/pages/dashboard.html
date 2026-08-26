@@ -5,164 +5,220 @@
     <div>
       <h1 class="text-2xl font-semibold text-ink">Certificate dashboard</h1>
       <p class="mt-1 text-sm text-ink-5">
-        Warning at {{.WarningDays}} days, critical at {{.CriticalDays}}. Expiry alerts are re-checked every {{.SweepInterval}}.
+        Warning at {{.WarningDays}} days, critical at {{.CriticalDays}}. Expiry alerts are re-checked every {{.SweepInterval}}. Last swept {{since .LastSweep}}.
       </p>
     </div>
   </div>
 
-  {{template "summary-tiles" .}}
-
-  <section class="space-y-3">
-    <div class="flex items-baseline justify-between">
-      <h2 class="text-sm font-semibold text-ink">Needs attention</h2>
-      <a href="/certificates" class="text-xs text-hue-sky hover:text-hue-sky-strong">View the vault &rarr;</a>
+  <div data-tabs>
+    <div class="flex flex-wrap gap-2" role="tablist">
+      <button type="button" data-tab-button="internal" aria-selected="true"
+              class="rounded-lg px-3 py-1.5 text-xs font-medium ring-1 ring-inset ring-sky-500/25 bg-sky-500/10 text-hue-sky">
+        Internal <span class="tabular-nums opacity-70">({{len .Internal.Certificates}})</span>
+      </button>
+      <button type="button" data-tab-button="external" aria-selected="false"
+              class="rounded-lg px-3 py-1.5 text-xs font-medium text-ink-4">
+        External <span class="tabular-nums opacity-70">({{len .External.Certificates}})</span>
+      </button>
+      <button type="button" data-tab-button="pending" aria-selected="false"
+              class="rounded-lg px-3 py-1.5 text-xs font-medium text-ink-4">
+        Pending <span class="tabular-nums opacity-70">({{len .Pending.Certificates}})</span>
+      </button>
     </div>
 
-    <div class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
-      <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-line/5 text-sm">
-          <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
-            <tr>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Certificate</th>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Status</th>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Expires</th>
-              <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Issuer</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-line/5">
-            {{range .Attention}}
-            <tr class="transition hover:bg-line/[0.02]">
-              <td class="px-4 py-3">
-                <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
-                {{if .Owner}}<p class="text-xs text-ink-5">{{.Owner}}</p>{{end}}
-              </td>
-              <td class="px-4 py-3">
-                {{$hs := .HealthStatus $.WarningDays $.CriticalDays}}
-                <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
-                  <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
-                </span>
-              </td>
-              <td class="px-4 py-3">
-                <span class="tabular-nums text-ink-2">{{.ExpiresIn}}</span>
-              </td>
-              <td class="hidden max-w-md truncate px-4 py-3 text-ink-5 sm:table-cell">
-                {{.IssuerCommonName}}
-              </td>
-            </tr>
-            {{else}}
-            <tr>
-              <td colspan="4" class="px-4 py-10 text-center text-ink-5">
-                Everything is healthy. Nothing expires inside the warning window.
-              </td>
-            </tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
+    <div data-tab-panel="internal" class="mt-4 space-y-8">
+      {{template "dashboard-scope" dict "Scope" .Internal "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" true "Empty" "No internal certificates yet."}}
     </div>
-  </section>
+    <div data-tab-panel="external" class="mt-4 hidden space-y-8">
+      {{template "dashboard-scope" dict "Scope" .External "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" true "Empty" "No external certificates yet."}}
+    </div>
+    <div data-tab-panel="pending" class="mt-4 hidden space-y-8">
+      {{template "dashboard-scope" dict "Scope" .Pending "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" false "Empty" "Nothing awaiting a certificate."}}
+    </div>
+  </div>
+</div>
+{{end}}
 
-  <section class="space-y-3">
-    <div class="flex items-baseline justify-between">
-      <h2 class="text-sm font-semibold text-ink">All certificates</h2>
-      <p class="text-xs text-ink-5">
-        {{len .Certificates}} total · read-only here — <a href="/help" class="text-hue-sky hover:text-hue-sky-strong">see Help</a> to request one
-        {{if .User}}, or open the <a href="/certificates" class="text-hue-sky hover:text-hue-sky-strong">vault</a> to manage them{{end}}.
-      </p>
-    </div>
+{{/* Renders one trust-class scope's full slice of the dashboard: summary
+     tiles, "needs attention", the certificate table, and the CA breakdown.
+     Takes "Scope" (a dashboardScope), "User", "WarningDays", "CriticalDays",
+     "ShowDetail" (false hides tiles/attention/CA-breakdown — used for the
+     Pending tab, where certificates have no health status or issuer yet),
+     and "Empty" (the certificate table's no-rows message). */}}
+{{define "dashboard-scope"}}
+{{if .ShowDetail}}
+<section class="space-y-3">
+  <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    {{$s := .Scope.Summary}}
+    {{template "tile" dict "Label" "Certificates" "Value" $s.Total "Tone" "slate"}}
+    {{template "tile" dict "Label" "Healthy" "Value" $s.OK "Tone" "emerald"}}
+    {{template "tile" dict "Label" "Expiring" "Value" $s.Expiring "Tone" "amber"}}
+    {{template "tile" dict "Label" "Critical" "Value" $s.Critical "Tone" "orange"}}
+    {{template "tile" dict "Label" "Expired" "Value" $s.Expired "Tone" "rose"}}
+  </div>
+</section>
 
-    <div class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
-      <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-line/5 text-sm">
-          <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
-            <tr>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Certificate</th>
-              <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Subject</th>
-              <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Issuer</th>
-              <th scope="col" class="hidden px-4 py-3 text-left font-medium lg:table-cell">Extended key usage</th>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Expires</th>
-              <th scope="col" class="px-4 py-3 text-left font-medium">Health</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-line/5">
-            {{range .Certificates}}
-            <tr class="transition hover:bg-line/[0.02]">
-              <td class="px-4 py-3">
-                {{if $.User}}
-                <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
-                {{else}}
-                <span class="font-medium text-ink-1">{{.CommonName}}</span>
-                {{end}}
-                <p class="mt-0.5 text-xs text-ink-5">{{.KeyLabel}} · {{.Origin.Label}} · {{.SANSummary}}</p>
-                {{if .Owner}}<p class="text-xs text-ink-6">{{.Owner}}</p>{{end}}
-              </td>
-              <td class="hidden max-w-xs truncate px-4 py-3 text-ink-4 md:table-cell">
-                {{if .Subject}}{{.SubjectCommonName}}{{else}}—{{end}}
-              </td>
-              <td class="hidden max-w-xs truncate px-4 py-3 text-ink-4 md:table-cell">
-                {{if .Issuer}}{{.IssuerCommonName}}{{else}}—{{end}}
-              </td>
-              <td class="hidden px-4 py-3 text-ink-4 lg:table-cell">{{ekuSummary .ExtKeyUsage}}</td>
-              <td class="px-4 py-3">
-                {{if .NotAfter}}
-                <span class="tabular-nums text-ink-2">{{formatDate .NotAfter}}</span>
-                <p class="text-xs text-ink-5">{{.ExpiresIn}}</p>
-                {{else}}
-                <span class="text-ink-5">Not yet issued</span>
-                {{end}}
-              </td>
-              <td class="px-4 py-3">
-                {{if eq .Status "issued"}}
-                {{$hs := .HealthStatus $.WarningDays $.CriticalDays}}
-                <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
-                  <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
-                </span>
-                {{else}}
-                <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">Pending</span>
-                {{end}}
-              </td>
-            </tr>
-            {{else}}
-            <tr>
-              <td colspan="6" class="px-4 py-10 text-center text-ink-5">No certificates yet.</td>
-            </tr>
-            {{end}}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
+<section class="space-y-3">
+  <div class="flex items-baseline justify-between">
+    <h2 class="text-sm font-semibold text-ink">Needs attention</h2>
+    <a href="/certificates" class="text-xs text-hue-sky hover:text-hue-sky-strong">View the vault &rarr;</a>
+  </div>
 
-  <section class="space-y-3">
-    <div class="flex items-baseline justify-between">
-      <h2 class="text-sm font-semibold text-ink">Certificate authorities</h2>
-      {{if .User}}<a href="/certificates/issuers" class="text-xs text-hue-sky hover:text-hue-sky-strong">Full breakdown &rarr;</a>{{end}}
-    </div>
-    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      {{range .Groups}}
-      {{$stats := issuerSummary .Certificates}}
-      <div class="rounded-xl border border-line/5 bg-card/40 p-4">
-        <p class="truncate font-medium text-ink-1">{{.Issuer}}</p>
-        <p class="mt-1 text-xs text-ink-5">
-          {{len .Certificates}} certificate{{if ne (len .Certificates) 1}}s{{end}}
-          {{if $stats.Pending}} · {{$stats.Pending}} pending{{end}}
-        </p>
-        <p class="mt-2 text-xs text-ink-6">
-          {{if $stats.NextExpiry}}
-            Next expiry {{formatDate $stats.NextExpiry}}
-          {{else if gt $stats.Issued 0}}
-            No expiry on file
+  <div class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-line/5 text-sm">
+        <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
+          <tr>
+            <th scope="col" class="px-4 py-3 text-left font-medium">Certificate</th>
+            <th scope="col" class="px-4 py-3 text-left font-medium">Status</th>
+            <th scope="col" class="px-4 py-3 text-left font-medium">Expires</th>
+            <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Issuer</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line/5">
+          {{$root := .}}
+          {{range .Scope.Attention}}
+          <tr class="transition hover:bg-line/[0.02]">
+            <td class="px-4 py-3">
+              <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
+              {{if .Owner}}<p class="text-xs text-ink-5">{{.Owner}}</p>{{end}}
+            </td>
+            <td class="px-4 py-3">
+              {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays}}
+              <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
+                <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
+              </span>
+            </td>
+            <td class="px-4 py-3">
+              <span class="tabular-nums text-ink-2">{{.ExpiresIn}}</span>
+            </td>
+            <td class="hidden max-w-md truncate px-4 py-3 text-ink-5 sm:table-cell">
+              {{.IssuerCommonName}}
+            </td>
+          </tr>
           {{else}}
-            Nothing issued yet
+          <tr>
+            <td colspan="4" class="px-4 py-10 text-center text-ink-5">
+              Everything is healthy. Nothing expires inside the warning window.
+            </td>
+          </tr>
           {{end}}
-        </p>
-      </div>
-      {{else}}
-      <p class="rounded-xl border border-dashed border-line/10 p-6 text-center text-sm text-ink-5 sm:col-span-2 lg:col-span-3">
-        Nothing to group yet.
-      </p>
-      {{end}}
+        </tbody>
+      </table>
     </div>
-  </section>
+  </div>
+</section>
+{{end}}
+
+<section class="space-y-3">
+  <div class="flex items-baseline justify-between">
+    <h2 class="text-sm font-semibold text-ink">All certificates</h2>
+    <p class="text-xs text-ink-5">
+      {{len .Scope.Certificates}} total · read-only here — <a href="/help" class="text-hue-sky hover:text-hue-sky-strong">see Help</a> to request one
+      {{if .User}}, or open the <a href="/certificates" class="text-hue-sky hover:text-hue-sky-strong">vault</a> to manage them{{end}}.
+    </p>
+  </div>
+  {{template "dashboard-cert-table" dict "Certs" .Scope.Certificates "WarningDays" .WarningDays "CriticalDays" .CriticalDays "User" .User "Empty" .Empty}}
+</section>
+
+{{if .ShowDetail}}
+<section class="space-y-3">
+  <div class="flex items-baseline justify-between">
+    <h2 class="text-sm font-semibold text-ink">Certificate authorities</h2>
+    {{if .User}}<a href="/certificates/issuers" class="text-xs text-hue-sky hover:text-hue-sky-strong">Full breakdown &rarr;</a>{{end}}
+  </div>
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    {{range .Scope.Groups}}
+    {{$stats := issuerSummary .Certificates}}
+    <div class="rounded-xl border border-line/5 bg-card/40 p-4">
+      <p class="truncate font-medium text-ink-1">{{.Issuer}}</p>
+      <p class="mt-1 text-xs text-ink-5">
+        {{len .Certificates}} certificate{{if ne (len .Certificates) 1}}s{{end}}
+        {{if $stats.Pending}} · {{$stats.Pending}} pending{{end}}
+      </p>
+      <p class="mt-2 text-xs text-ink-6">
+        {{if $stats.NextExpiry}}
+          Next expiry {{formatDate $stats.NextExpiry}}
+        {{else if gt $stats.Issued 0}}
+          No expiry on file
+        {{else}}
+          Nothing issued yet
+        {{end}}
+      </p>
+    </div>
+    {{else}}
+    <p class="rounded-xl border border-dashed border-line/10 p-6 text-center text-sm text-ink-5 sm:col-span-2 lg:col-span-3">
+      Nothing to group yet.
+    </p>
+    {{end}}
+  </div>
+</section>
+{{end}}
+{{end}}
+
+{{/* Shared by each Internal/External/Pending tab panel above — takes
+     "Certs", "WarningDays", "CriticalDays", "User", "Empty" (the no-rows
+     message, tailored per tab). */}}
+{{define "dashboard-cert-table"}}
+<div class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-line/5 text-sm">
+      <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
+        <tr>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Certificate</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Subject</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Issuer</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium lg:table-cell">Extended key usage</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Expires</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Health</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-line/5">
+        {{$root := .}}
+        {{range .Certs}}
+        <tr class="transition hover:bg-line/[0.02]">
+          <td class="px-4 py-3">
+            {{if $root.User}}
+            <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
+            {{else}}
+            <span class="font-medium text-ink-1">{{.CommonName}}</span>
+            {{end}}
+            <p class="mt-0.5 text-xs text-ink-5">{{.KeyLabel}} · {{.Origin.Label}} · {{.SANSummary}}</p>
+            {{if .Owner}}<p class="text-xs text-ink-6">{{.Owner}}</p>{{end}}
+          </td>
+          <td class="hidden max-w-xs truncate px-4 py-3 text-ink-4 md:table-cell">
+            {{if .Subject}}{{.SubjectCommonName}}{{else}}—{{end}}
+          </td>
+          <td class="hidden max-w-xs truncate px-4 py-3 text-ink-4 md:table-cell">
+            {{if .Issuer}}{{.IssuerCommonName}}{{else}}—{{end}}
+          </td>
+          <td class="hidden px-4 py-3 text-ink-4 lg:table-cell">{{ekuSummary .ExtKeyUsage}}</td>
+          <td class="px-4 py-3">
+            {{if .NotAfter}}
+            <span class="tabular-nums text-ink-2">{{formatDate .NotAfter}}</span>
+            <p class="text-xs text-ink-5">{{.ExpiresIn}}</p>
+            {{else}}
+            <span class="text-ink-5">Not yet issued</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3">
+            {{if eq .Status "issued"}}
+            {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays}}
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
+              <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
+            </span>
+            {{else}}
+            <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-ink-3 ring-1 ring-inset ring-slate-500/30">Pending</span>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" class="px-4 py-10 text-center text-ink-5">{{$root.Empty}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
 </div>
 {{end}}

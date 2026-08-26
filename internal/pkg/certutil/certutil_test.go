@@ -3,6 +3,7 @@ package certutil
 import (
 	"archive/zip"
 	"bytes"
+	"crypto"
 	"crypto/x509"
 	"strings"
 	"testing"
@@ -294,6 +295,89 @@ func TestNormalizeExtKeyUsagesRejectsUnknown(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("blank entries should be dropped, got %v", got)
+	}
+}
+
+// buildTestCA builds a self-signed CA certificate + key for tests — SelfSign
+// already produces an IsCA:true certificate, so it doubles as a Root CA
+// fixture without needing separate CA-generation scaffolding.
+func buildTestCA(t *testing.T, validDays int) (*x509.Certificate, crypto.Signer) {
+	t.Helper()
+	req := newRequest()
+	req.Subject.CommonName = "Test Root CA"
+	csrPEM, key, err := CreateCSR(req)
+	if err != nil {
+		t.Fatalf("CreateCSR (ca): %v", err)
+	}
+	csr, err := ParseCSRPEM(csrPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM (ca): %v", err)
+	}
+	caCert, _, err := SelfSign(csr, key, validDays, nil)
+	if err != nil {
+		t.Fatalf("SelfSign (ca): %v", err)
+	}
+	return caCert, key
+}
+
+func TestSignWithCAProducesEndEntityLeafSignedByTheCA(t *testing.T) {
+	caCert, caKey := buildTestCA(t, 3650)
+
+	leafCSRPEM, leafKey, err := CreateCSR(newRequest())
+	if err != nil {
+		t.Fatalf("CreateCSR (leaf): %v", err)
+	}
+	leafCSR, err := ParseCSRPEM(leafCSRPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM (leaf): %v", err)
+	}
+
+	leaf, leafPEM, err := SignWithCA(leafCSR, caCert, caKey, 30, nil)
+	if err != nil {
+		t.Fatalf("SignWithCA: %v", err)
+	}
+	if !strings.Contains(leafPEM, "BEGIN CERTIFICATE") {
+		t.Error("leafPEM is not PEM encoded")
+	}
+	if leaf.IsCA {
+		t.Error("a CA-issued leaf must not itself be a CA")
+	}
+	if leaf.KeyUsage&x509.KeyUsageCertSign != 0 {
+		t.Error("a CA-issued leaf must not carry KeyUsageCertSign")
+	}
+	if leaf.Issuer.String() != caCert.Subject.String() {
+		t.Errorf("leaf issuer = %q, want the CA's subject %q", leaf.Issuer.String(), caCert.Subject.String())
+	}
+	if err := leaf.CheckSignatureFrom(caCert); err != nil {
+		t.Errorf("leaf does not verify against the CA's signature: %v", err)
+	}
+	if !MatchesKey(leaf, leafKey) {
+		t.Error("leaf certificate does not match the leaf's own key")
+	}
+	if MatchesKey(leaf, caKey) {
+		t.Error("leaf certificate must not match the CA's key")
+	}
+}
+
+func TestSignWithCACapsValidityToTheCAsOwnExpiry(t *testing.T) {
+	// A CA valid for only 5 more days must never issue a leaf that outlives it.
+	caCert, caKey := buildTestCA(t, 5)
+
+	leafCSRPEM, _, err := CreateCSR(newRequest())
+	if err != nil {
+		t.Fatalf("CreateCSR (leaf): %v", err)
+	}
+	leafCSR, err := ParseCSRPEM(leafCSRPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM (leaf): %v", err)
+	}
+
+	leaf, _, err := SignWithCA(leafCSR, caCert, caKey, 365, nil)
+	if err != nil {
+		t.Fatalf("SignWithCA: %v", err)
+	}
+	if leaf.NotAfter.After(caCert.NotAfter) {
+		t.Errorf("leaf NotAfter %v must not be after the CA's NotAfter %v", leaf.NotAfter, caCert.NotAfter)
 	}
 }
 

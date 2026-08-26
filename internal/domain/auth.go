@@ -14,17 +14,18 @@ import (
 // them would force every write-capable user into full account control.
 type Role string
 
-// The three roles the app understands. Any other string is invalid.
+// The four roles the app understands. Any other string is invalid.
 const (
-	RoleAdmin  Role = "admin"
-	RoleEditor Role = "editor"
-	RoleViewer Role = "viewer"
+	RoleAdmin     Role = "admin"
+	RoleEditor    Role = "editor"
+	RoleViewer    Role = "viewer"
+	RoleRequester Role = "requester"
 )
 
 // Valid reports whether r is one of the known roles.
 func (r Role) Valid() bool {
 	switch r {
-	case RoleAdmin, RoleEditor, RoleViewer:
+	case RoleAdmin, RoleEditor, RoleViewer, RoleRequester:
 		return true
 	default:
 		return false
@@ -43,6 +44,14 @@ func (r Role) CanManageUsers() bool {
 	return r == RoleAdmin
 }
 
+// CanRequestCertificates reports whether this role may submit certificate
+// request tickets (the requester-tier self-service flow). Admins and editors
+// manage tickets directly through the ticket queue instead, so this is
+// deliberately exclusive to the requester tier.
+func (r Role) CanRequestCertificates() bool {
+	return r == RoleRequester
+}
+
 // Label renders the role for humans.
 func (r Role) Label() string {
 	switch r {
@@ -52,6 +61,8 @@ func (r Role) Label() string {
 		return "Editor"
 	case RoleViewer:
 		return "Viewer"
+	case RoleRequester:
+		return "Requester"
 	default:
 		return "Unknown"
 	}
@@ -90,7 +101,7 @@ func (u *User) Validate() error {
 		return Invalid("email", "must be a valid email address")
 	}
 	if !u.Role.Valid() {
-		return Invalid("role", "role must be admin, editor, or viewer")
+		return Invalid("role", "role must be admin, editor, viewer, or requester")
 	}
 	return nil
 }

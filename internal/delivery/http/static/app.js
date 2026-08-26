@@ -116,4 +116,34 @@
     rsa.classList.toggle("hidden", isEC);
     ec.classList.toggle("hidden", !isEC);
   });
+
+  // Generic conditional field visibility. An element carrying
+  // data-show-when="fieldName:value" is shown only while the nearest form's
+  // fieldName (a radio group or a select) currently holds that value —
+  // e.g. the certificate request form uses this to show the PO number only
+  // for an external trust class, and to swap between "new certificate"
+  // fields and the renewal picker depending on request type.
+  function applyShowWhen(root) {
+    if (!root.querySelectorAll) return;
+    root.querySelectorAll("[data-show-when]").forEach(function (el) {
+      var form = el.closest("form");
+      if (!form) return;
+      var parts = el.getAttribute("data-show-when").split(":");
+      var field = parts[0], want = parts[1];
+      var checked = form.querySelector('[name="' + field + '"]:checked');
+      var current = checked ? checked.value : (function () {
+        var input = form.querySelector('[name="' + field + '"]');
+        return input ? input.value : null;
+      })();
+      el.classList.toggle("hidden", current !== want);
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () { applyShowWhen(document); });
+  document.body.addEventListener("htmx:afterSwap", function (event) { applyShowWhen(event.target); });
+
+  document.addEventListener("change", function (event) {
+    var form = event.target.form;
+    if (form && form.querySelector("[data-show-when]")) applyShowWhen(form);
+  });
 })();

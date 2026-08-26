@@ -65,13 +65,50 @@ func (f *fakeCertificateRepo) SetAlertLevel(_ context.Context, _ uuid.UUID, _ in
 	return nil
 }
 
+// fakeRootCARepo is a minimal in-memory domain.RootCARepository, mirroring
+// fakeCertificateRepo's shape.
+type fakeRootCARepo struct {
+	byID map[uuid.UUID]*domain.RootCA
+}
+
+func newFakeRootCARepo() *fakeRootCARepo {
+	return &fakeRootCARepo{byID: map[uuid.UUID]*domain.RootCA{}}
+}
+
+func (f *fakeRootCARepo) Create(_ context.Context, c *domain.RootCA) error {
+	c.ID = uuid.New()
+	f.byID[c.ID] = c
+	return nil
+}
+
+func (f *fakeRootCARepo) Delete(_ context.Context, id uuid.UUID) error {
+	delete(f.byID, id)
+	return nil
+}
+
+func (f *fakeRootCARepo) GetByID(_ context.Context, id uuid.UUID) (*domain.RootCA, error) {
+	c, ok := f.byID[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (f *fakeRootCARepo) List(_ context.Context) ([]*domain.RootCA, error) {
+	out := make([]*domain.RootCA, 0, len(f.byID))
+	for _, c := range f.byID {
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func newTestCertificateService(t *testing.T) *CertificateService {
 	t.Helper()
 	sealer, err := secret.NewSealer("")
 	if err != nil {
 		t.Fatalf("NewSealer: %v", err)
 	}
-	return NewCertificateService(newFakeCertificateRepo(), sealer, discardLogger(), CertificateOptions{})
+	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), sealer, discardLogger(), CertificateOptions{})
 }
 
 func TestImportCSRStoresSubjectSANsAndRequestedEKU(t *testing.T) {
@@ -285,6 +322,110 @@ func TestAttachCertificateOverwritesExtKeyUsageWithIssuedLeaf(t *testing.T) {
 	want := []string{certutil.EKUClientAuth, certutil.EKUCodeSigning}
 	if len(updated.ExtKeyUsage) != len(want) || updated.ExtKeyUsage[0] != want[0] || updated.ExtKeyUsage[1] != want[1] {
 		t.Errorf("ExtKeyUsage after attach = %v, want %v (the issued leaf's, not the original request)", updated.ExtKeyUsage, want)
+	}
+}
+
+// buildTestRootCAPEMs builds a self-signed, IsCA:true certificate + its PEM
+// key pair — the shape UploadRootCA expects. SelfSign already produces an
+// IsCA:true certificate, so it doubles as a Root CA fixture.
+func buildTestRootCAPEMs(t *testing.T) (certPEM, keyPEM string) {
+	t.Helper()
+	csrPEM, key, err := certutil.CreateCSR(certutil.CSRRequest{
+		Subject: certutil.Subject{CommonName: "Test Root CA"},
+		KeySpec: certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR (ca): %v", err)
+	}
+	csr, err := certutil.ParseCSRPEM(csrPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM (ca): %v", err)
+	}
+	_, caCertPEM, err := certutil.SelfSign(csr, key, 3650, nil)
+	if err != nil {
+		t.Fatalf("SelfSign (ca): %v", err)
+	}
+	caKeyPEM, err := certutil.EncodePrivateKeyPEM(key)
+	if err != nil {
+		t.Fatalf("EncodePrivateKeyPEM (ca): %v", err)
+	}
+	return caCertPEM, caKeyPEM
+}
+
+func TestUploadRootCARejectsKeyMismatch(t *testing.T) {
+	svc := newTestCertificateService(t)
+	caCertPEM, _ := buildTestRootCAPEMs(t)
+	_, otherKeyPEM := buildTestRootCAPEMs(t)
+
+	_, err := svc.UploadRootCA(context.Background(), "Mismatched CA", caCertPEM, otherKeyPEM)
+	if err == nil {
+		t.Fatal("expected an error uploading a certificate paired with the wrong private key")
+	}
+}
+
+func TestUploadRootCARejectsNonCACertificate(t *testing.T) {
+	svc := newTestCertificateService(t)
+	// An ordinary self-signed leaf via CreateCSR+SelfSign IS IsCA:true (see
+	// SelfSign's own doc comment), so build a non-CA cert via a plain leaf
+	// signed BY a CA instead — that's what SignWithCA produces.
+	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
+	ca, err := svc.UploadRootCA(context.Background(), "Valid CA", caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("UploadRootCA (setup): %v", err)
+	}
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "leaf.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	signed, err := svc.SignWithRootCA(context.Background(), pending.ID, ca.ID, 30)
+	if err != nil {
+		t.Fatalf("SignWithRootCA (setup): %v", err)
+	}
+	keyPEM, err := svc.PrivateKey(signed)
+	if err != nil {
+		t.Fatalf("PrivateKey: %v", err)
+	}
+
+	if _, err := svc.UploadRootCA(context.Background(), "Not actually a CA", signed.CertificatePEM, keyPEM); err == nil {
+		t.Fatal("expected an error uploading a non-CA certificate as a Root CA")
+	}
+}
+
+func TestSignWithRootCAMarksCertificateInternal(t *testing.T) {
+	svc := newTestCertificateService(t)
+	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
+	ca, err := svc.UploadRootCA(context.Background(), "Acme Internal CA", caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("UploadRootCA: %v", err)
+	}
+
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "internal.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	if pending.TrustClass() != domain.TrustPending {
+		t.Fatalf("a not-yet-issued certificate must be TrustPending, got %q", pending.TrustClass())
+	}
+
+	signed, err := svc.SignWithRootCA(context.Background(), pending.ID, ca.ID, 30)
+	if err != nil {
+		t.Fatalf("SignWithRootCA: %v", err)
+	}
+	if signed.SelfSigned {
+		t.Error("a CA-signed certificate must not be marked SelfSigned")
+	}
+	if signed.SignedByRootCAID == nil || *signed.SignedByRootCAID != ca.ID {
+		t.Fatalf("SignedByRootCAID = %v, want %v", signed.SignedByRootCAID, ca.ID)
+	}
+	if got := signed.TrustClass(); got != domain.TrustInternal {
+		t.Fatalf("TrustClass() = %q, want %q", got, domain.TrustInternal)
+	}
+	if signed.ChainPEM != ca.CertificatePEM {
+		t.Error("expected the CA's own certificate to become the issued certificate's chain")
 	}
 }
 

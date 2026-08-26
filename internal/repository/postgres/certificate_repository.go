@@ -30,8 +30,9 @@ var _ domain.CertificateRepository = (*CertificateRepository)(nil)
 const certificateColumns = `id, common_name, organization, organizational_unit, country, province,
 	locality, email, dns_names, ip_addresses, origin, owner, key_algorithm, key_bits, key_curve,
 	csr_pem, private_key_pem, private_key_encrypted, certificate_pem, chain_pem, self_signed,
-	subject, issuer, signature_algorithm, public_key_algorithm, key_size, chain_length,
-	fingerprint_sha256, ext_key_usage, not_before, not_after, status, notes, created_at, updated_at`
+	signed_by_root_ca_id, subject, issuer, signature_algorithm, public_key_algorithm, key_size,
+	chain_length, fingerprint_sha256, ext_key_usage, not_before, not_after, status, notes,
+	created_at, updated_at`
 
 // Create inserts a new certificate record.
 func (r *CertificateRepository) Create(ctx context.Context, c *domain.Certificate) error {
@@ -67,12 +68,13 @@ func (r *CertificateRepository) Update(ctx context.Context, c *domain.Certificat
 		SET certificate_pem = $2, chain_pem = $3, self_signed = $4, subject = $5, issuer = $6,
 		    signature_algorithm = $7, public_key_algorithm = $8, key_size = $9, chain_length = $10,
 		    fingerprint_sha256 = $11, ext_key_usage = $12, not_before = $13, not_after = $14,
-		    status = $15, notes = $16, owner = $17, updated_at = now()
+		    status = $15, notes = $16, owner = $17, signed_by_root_ca_id = $18, updated_at = now()
 		WHERE id = $1
 		RETURNING updated_at`
 	err := r.pool.QueryRow(ctx, q, c.ID, c.CertificatePEM, c.ChainPEM, c.SelfSigned, c.Subject,
 		c.Issuer, c.SignatureAlgorithm, c.PublicKeyAlgorithm, c.KeySize, c.ChainLength,
 		c.FingerprintSHA256, nonNil(c.ExtKeyUsage), c.NotBefore, c.NotAfter, string(c.Status), c.Notes, c.Owner,
+		c.SignedByRootCAID,
 	).Scan(&c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
@@ -121,8 +123,14 @@ func (r *CertificateRepository) List(ctx context.Context, f domain.CertificateFi
 		       OR owner ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR status = $2)
 		  AND ($3 = '' OR origin = $3)
+		  AND ($4 = '' OR (
+		        certificate_pem <> '' AND (
+		          ($4 = 'internal' AND (self_signed OR signed_by_root_ca_id IS NOT NULL)) OR
+		          ($4 = 'external' AND NOT self_signed AND signed_by_root_ca_id IS NULL)
+		        )
+		      ))
 		ORDER BY created_at DESC`
-	rows, err := r.pool.Query(ctx, q, strings.TrimSpace(f.Search), string(f.Status), string(f.Origin))
+	rows, err := r.pool.Query(ctx, q, strings.TrimSpace(f.Search), string(f.Status), string(f.Origin), f.Trust)
 	if err != nil {
 		return nil, fmt.Errorf("certificate repo: list: %w", err)
 	}
@@ -198,9 +206,9 @@ func scanCertificate(rows pgx.Rows) (*domain.Certificate, error) {
 	err := rows.Scan(&c.ID, &c.CommonName, &c.Organization, &c.OrganizationalUnit, &c.Country,
 		&c.Province, &c.Locality, &c.Email, &c.DNSNames, &c.IPAddresses, &origin, &c.Owner,
 		&c.KeyAlgorithm, &c.KeyBits, &c.KeyCurve, &c.CSRPEM, &c.PrivateKeyPEM, &c.PrivateKeyEncrypted,
-		&c.CertificatePEM, &c.ChainPEM, &c.SelfSigned, &c.Subject, &c.Issuer, &c.SignatureAlgorithm,
-		&c.PublicKeyAlgorithm, &c.KeySize, &c.ChainLength, &c.FingerprintSHA256, &c.ExtKeyUsage,
-		&c.NotBefore, &c.NotAfter, &status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
+		&c.CertificatePEM, &c.ChainPEM, &c.SelfSigned, &c.SignedByRootCAID, &c.Subject, &c.Issuer,
+		&c.SignatureAlgorithm, &c.PublicKeyAlgorithm, &c.KeySize, &c.ChainLength, &c.FingerprintSHA256,
+		&c.ExtKeyUsage, &c.NotBefore, &c.NotAfter, &status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("certificate repo: scan: %w", err)
 	}

@@ -26,6 +26,7 @@
           <td class="px-4 py-3">
             <select hx-post="/users/{{.ID}}/role" hx-trigger="change" hx-target="#user-table" hx-swap="outerHTML"
                     class="field-select py-1.5 pl-2 pr-9 text-sm">
+              <option value="requester" {{if eq .Role "requester"}}selected{{end}}>Requester</option>
               <option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>Viewer</option>
               <option value="editor" {{if eq .Role "editor"}}selected{{end}}>Editor</option>
               <option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option>
@@ -55,6 +56,16 @@
                   </button>
                 </form>
               </details>
+              {{if .MFAEnabled}}
+              <button type="button"
+                      hx-post="/users/{{.ID}}/reset-mfa"
+                      hx-confirm="Reset MFA for {{.Email}}? They'll be signed out everywhere and must enroll a new authenticator at next login."
+                      hx-target="#user-table"
+                      hx-swap="outerHTML"
+                      class="btn-ghost text-ink-4 ring-line/10 hover:bg-line/5 hover:text-ink-1">
+                Reset MFA
+              </button>
+              {{end}}
               <button type="button"
                       hx-delete="/users/{{.ID}}"
                       hx-confirm="Remove {{.Email}}? This cannot be undone."

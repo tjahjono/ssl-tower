@@ -349,6 +349,62 @@ func TestMFAEnrollmentAndLoginFlow(t *testing.T) {
 	}
 }
 
+func TestResetMFAClearsEnrollmentSessionsAndRecoveryCodes(t *testing.T) {
+	repo := newFakeUserRepo()
+	auth := newTestAuthService(repo)
+	ctx := context.Background()
+	user := mustCreateUser(t, auth, ctx, "admin@example.com", "correct-horse", domain.RoleAdmin)
+
+	enrollment, err := auth.BeginMFAEnrollment(ctx, user)
+	if err != nil {
+		t.Fatalf("begin enrollment failed: %v", err)
+	}
+	code, err := totp.GenerateCode(enrollment.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("failed to generate a valid TOTP code for the test: %v", err)
+	}
+	if _, err := auth.ConfirmMFAEnrollment(ctx, user, code); err != nil {
+		t.Fatalf("confirm enrollment failed: %v", err)
+	}
+
+	// An active session must exist before the reset, so we can prove it gets
+	// torn down.
+	if _, _, err := auth.createSession(ctx, user.ID); err != nil {
+		t.Fatalf("createSession failed: %v", err)
+	}
+	if got := len(repo.sessions); got == 0 {
+		t.Fatal("expected at least one session before ResetMFA")
+	}
+
+	if err := auth.ResetMFA(ctx, user.ID); err != nil {
+		t.Fatalf("ResetMFA failed: %v", err)
+	}
+
+	refetched, err := repo.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID after reset: %v", err)
+	}
+	if refetched.MFAEnabled {
+		t.Fatal("expected MFAEnabled to be false after ResetMFA")
+	}
+	if refetched.TOTPSecret != "" {
+		t.Fatal("expected TOTPSecret to be cleared after ResetMFA")
+	}
+	if !refetched.NeedsMFAEnrollment() {
+		t.Fatal("expected NeedsMFAEnrollment to be true again after ResetMFA, so the holder re-enrolls at next login")
+	}
+	if len(repo.sessions) != 0 {
+		t.Fatalf("expected ResetMFA to sign the account out everywhere, got %d sessions still present", len(repo.sessions))
+	}
+	remaining, err := repo.UnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UnusedRecoveryCodes after reset: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected old recovery codes to be cleared after ResetMFA, got %d remaining", len(remaining))
+	}
+}
+
 func TestValidateSessionRejectsExpired(t *testing.T) {
 	repo := newFakeUserRepo()
 	auth := newTestAuthService(repo)

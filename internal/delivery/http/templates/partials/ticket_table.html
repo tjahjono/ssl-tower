@@ -1,0 +1,58 @@
+{{define "ticket-table-response"}}
+{{template "ticket-table" .}}
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "ticket-table"}}
+<div id="ticket-table" class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
+  <div class="overflow-x-auto">
+    <table class="min-w-full divide-y divide-line/5 text-sm">
+      <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
+        <tr>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Common name</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Requester</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Type</th>
+          <th scope="col" class="hidden px-4 py-3 text-left font-medium sm:table-cell">Trust</th>
+          <th scope="col" class="px-4 py-3 text-left font-medium">Status</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Age / SLA</th>
+          <th scope="col" class="px-4 py-3 text-right font-medium">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-line/5">
+        {{range .Tickets}}
+        <tr id="ticket-{{.ID}}" class="transition hover:bg-line/[0.02]">
+          <td class="px-4 py-3">
+            <a href="/tickets/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
+          </td>
+          <td class="hidden px-4 py-3 text-ink-4 md:table-cell">{{.RequesterEmail}}</td>
+          <td class="hidden px-4 py-3 text-ink-4 sm:table-cell">{{.Type.Label}}</td>
+          <td class="hidden px-4 py-3 sm:table-cell">
+            {{if eq .TrustClass "internal"}}
+              <span class="inline-flex items-center rounded-full bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-hue-sky ring-1 ring-inset ring-sky-500/25">Internal</span>
+            {{else}}
+              <span class="inline-flex items-center rounded-full bg-fuchsia-500/10 px-2 py-0.5 text-xs font-medium text-hue-fuchsia ring-1 ring-inset ring-fuchsia-500/25">External</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3">{{template "request-status-badge" .}}</td>
+          <td class="px-4 py-3 text-right text-xs">
+            <span class="text-ink-5">{{.AgeDays}}d</span>
+            {{if .OverdueSLA $.SLADays}}
+              <span class="ml-1 inline-flex items-center rounded-full bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-hue-rose ring-1 ring-inset ring-rose-500/25">overdue</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3 text-right">
+            <a href="/tickets/{{.ID}}" class="btn-ghost text-hue-sky ring-sky-500/25 hover:bg-sky-500/10">Open</a>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" class="px-4 py-10 text-center text-ink-5">
+            No tickets match this filter.
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

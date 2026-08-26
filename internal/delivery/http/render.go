@@ -4,7 +4,9 @@ package http
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -21,6 +23,36 @@ var templateFS embed.FS
 
 //go:embed static/*
 var staticFS embed.FS
+
+// assetVersion fingerprints every embedded static file's content so
+// templates can append it as a "?v=" query string (see templateFuncs'
+// "asset" func). /static/ is served with a long Cache-Control (see
+// cacheForever in middleware.go), which is only safe because the URL
+// itself changes whenever app.js/app.css change — without this, a browser
+// that already cached app.js keeps running the old JS for up to an hour
+// after a redeploy, even though the server is serving updated HTML/JS,
+// which looks exactly like "the fix didn't take" from the outside.
+var assetVersion = computeAssetVersion()
+
+func computeAssetVersion() string {
+	h := sha256.New()
+	entries, err := fs.ReadDir(staticFS, "static")
+	if err != nil {
+		return "dev"
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := staticFS.ReadFile("static/" + e.Name())
+		if err != nil {
+			continue
+		}
+		h.Write([]byte(e.Name()))
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:10]
+}
 
 // Renderer holds the parsed template sets: one per page (page + layout +
 // partials) plus a partial-only set used for htmx fragment responses.
@@ -115,6 +147,12 @@ func templateFuncs() template.FuncMap {
 			}
 			return t.UTC().Format("2 Jan 15:04 MST")
 		},
+		"formatStampPtr": func(t *time.Time) string {
+			if t == nil || t.IsZero() {
+				return "—"
+			}
+			return t.UTC().Format("2 Jan 15:04 MST")
+		},
 		"since": func(t time.Time) string {
 			if t.IsZero() {
 				return "never"
@@ -199,6 +237,9 @@ func templateFuncs() template.FuncMap {
 			return strings.Join(labels, ", ")
 		},
 		"issuerSummary": issuerSummary,
+		"asset": func(path string) string {
+			return path + "?v=" + assetVersion
+		},
 		"dict": func(values ...any) map[string]any {
 			out := map[string]any{}
 			for i := 0; i+1 < len(values); i += 2 {
@@ -249,48 +290,57 @@ func statusLabel(s domain.CheckStatus) string {
 }
 
 // badgeClass maps a status onto Tailwind utility classes for a pill badge.
+// The text color is a theme-aware token (text-hue-*, see web/input.css) — a
+// "300" shade reads fine on the dark palette but fails contrast once the
+// same class runs on the light one, so these route through the CSS
+// variable instead of a literal Tailwind shade. Backgrounds and rings stay
+// literal: a saturated hue at 10-30% opacity reads as a pale tint on either
+// background, so it doesn't need to flip per theme.
 func badgeClass(s domain.CheckStatus) string {
 	switch s {
 	case domain.StatusOK:
-		return "bg-emerald-500/10 text-emerald-300 ring-emerald-500/30"
+		return "bg-emerald-500/10 text-hue-emerald ring-emerald-500/30"
 	case domain.StatusExpiring:
-		return "bg-amber-500/10 text-amber-300 ring-amber-500/30"
+		return "bg-amber-500/10 text-hue-amber ring-amber-500/30"
 	case domain.StatusCritical:
-		return "bg-orange-500/10 text-orange-300 ring-orange-500/30"
+		return "bg-orange-500/10 text-hue-orange ring-orange-500/30"
 	case domain.StatusExpired:
-		return "bg-rose-500/10 text-rose-300 ring-rose-500/30"
+		return "bg-rose-500/10 text-hue-rose ring-rose-500/30"
 	default:
-		return "bg-slate-500/10 text-slate-300 ring-slate-500/30"
+		return "bg-slate-500/10 text-ink-3 ring-slate-500/30"
 	}
 }
 
-// flashClass maps a banner kind onto Tailwind utility classes.
+// flashClass maps a banner kind onto Tailwind utility classes. See
+// badgeClass's comment on why the text color is a theme-aware token.
 func flashClass(kind string) string {
 	switch kind {
 	case "success":
-		return "bg-emerald-500/10 text-emerald-200 ring-emerald-500/25"
+		return "bg-emerald-500/10 text-hue-emerald-strong ring-emerald-500/25"
 	case "error":
-		return "bg-rose-500/10 text-rose-200 ring-rose-500/25"
+		return "bg-rose-500/10 text-hue-rose-strong ring-rose-500/25"
 	case "warning":
-		return "bg-amber-500/10 text-amber-200 ring-amber-500/25"
+		return "bg-amber-500/10 text-hue-amber-strong ring-amber-500/25"
 	default:
-		return "bg-sky-500/10 text-sky-200 ring-sky-500/25"
+		return "bg-sky-500/10 text-hue-sky-strong ring-sky-500/25"
 	}
 }
 
 // auditBadgeClass color-codes an audit action for quick scanning: red for a
 // failure or destructive action, amber for a sensitive read (a private-key
-// download), sky for routine account/security events, slate for ordinary writes.
+// download), sky for routine account/security events, slate for ordinary
+// writes. See badgeClass's comment on why the text color is a theme-aware
+// token.
 func auditBadgeClass(action string) string {
 	switch action {
 	case "login_failed", "user_deleted", "certificate_deleted":
-		return "bg-rose-500/10 text-rose-300 ring-rose-500/30"
+		return "bg-rose-500/10 text-hue-rose ring-rose-500/30"
 	case "private_key_downloaded":
-		return "bg-amber-500/10 text-amber-300 ring-amber-500/30"
+		return "bg-amber-500/10 text-hue-amber ring-amber-500/30"
 	case "login_success", "logout", "password_changed", "mfa_enrolled":
-		return "bg-sky-500/10 text-sky-300 ring-sky-500/30"
+		return "bg-sky-500/10 text-hue-sky ring-sky-500/30"
 	default:
-		return "bg-slate-500/10 text-slate-300 ring-slate-500/30"
+		return "bg-slate-500/10 text-ink-3 ring-slate-500/30"
 	}
 }
 

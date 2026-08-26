@@ -1,4 +1,4 @@
-// Command server runs the SSL Admin certificate vault.
+// Command server runs the SSL Tower certificate vault.
 package main
 
 import (
@@ -58,8 +58,9 @@ func run() error {
 
 	// repository -> service -> delivery
 	certRepo := postgres.NewCertificateRepository(pool)
+	rootCARepo := postgres.NewRootCARepository(pool)
 
-	certSvc := service.NewCertificateService(certRepo, sealer, log, service.CertificateOptions{
+	certSvc := service.NewCertificateService(certRepo, rootCARepo, sealer, log, service.CertificateOptions{
 		WarningDays:  cfg.ExpiryWarningDays,
 		CriticalDays: cfg.ExpiryCriticalDays,
 	})
@@ -103,7 +104,7 @@ func run() error {
 		SessionSecret:   sessionSecret,
 		IdleTimeout:     cfg.SessionIdleTimeout,
 		AbsoluteTimeout: cfg.SessionAbsoluteTimeout,
-		Issuer:          "SSL Admin",
+		Issuer:          "SSL Tower",
 	})
 	if err := authSvc.Bootstrap(ctx, cfg.AdminEmail, cfg.AdminInitialPassword); err != nil {
 		log.Warn("account bootstrap skipped", "error", err)
@@ -115,7 +116,10 @@ func run() error {
 	contentRepo := postgres.NewSiteContentRepository(pool)
 	contentSvc := service.NewSiteContentService(contentRepo)
 
-	server, err := delivery.NewServer(certSvc, sweeper, authSvc, auditSvc, contentSvc, log, cfg.CookieSecure)
+	requestRepo := postgres.NewCertificateRequestRepository(pool)
+	requestSvc := service.NewCertificateRequestService(requestRepo, certSvc, emailNotifier, teamsNotifier, log, cfg.TicketSLADays)
+
+	server, err := delivery.NewServer(certSvc, sweeper, authSvc, auditSvc, contentSvc, requestSvc, log, cfg.CookieSecure)
 	if err != nil {
 		return err
 	}

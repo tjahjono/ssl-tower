@@ -1,0 +1,85 @@
+{{define "content"}}
+<div class="space-y-6">
+
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold text-ink">My requests</h1>
+      <p class="mt-1 text-sm text-ink-5">
+        Pick a request type and trust class below and the form only shows what that combination
+        needs — a renewal just needs the certificate and a reason; external certificates also need
+        a PO number. An editor or admin reviews it, and (for internal certificates) signs it, or
+        (for external ones) works it with the CA before attaching the result. Certificates are
+        never downloadable here; once fulfilled, an editor/admin sends it to you directly.
+      </p>
+    </div>
+    <button type="button" data-toggle-target="new-request"
+            data-toggle-label-open="Hide the form" data-toggle-label-closed="New request"
+            class="btn-primary shrink-0 px-4 py-2 text-sm">
+      <span data-toggle-label>New request</span>
+    </button>
+  </div>
+
+  <section id="new-request" class="hidden rounded-xl border border-line/5 bg-card/40 p-5">
+    <form hx-post="/requests" hx-target="#request-table" hx-swap="outerHTML" class="space-y-5">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div>
+          <span class="field-label mb-1 block">Request type</span>
+          <div class="flex gap-4 pt-1">
+            <label class="flex items-center gap-2 text-sm text-ink-3">
+              <input type="radio" name="type" value="new" checked class="text-sky-500 focus:ring-sky-500">New certificate
+            </label>
+            <label class="flex items-center gap-2 text-sm text-ink-3">
+              <input type="radio" name="type" value="renewal" class="text-sky-500 focus:ring-sky-500">Renewal
+            </label>
+          </div>
+        </div>
+        <div>
+          <span class="field-label mb-1 block">Trust class</span>
+          <div class="flex gap-4 pt-1">
+            <label class="flex items-center gap-2 text-sm text-ink-3">
+              <input type="radio" name="trust_class" value="internal" checked class="text-sky-500 focus:ring-sky-500">Internal
+            </label>
+            <label class="flex items-center gap-2 text-sm text-ink-3">
+              <input type="radio" name="trust_class" value="external" class="text-sky-500 focus:ring-sky-500">External
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div data-show-when="type:renewal" class="hidden">
+        <label for="existing_certificate_id" class="field-label mb-1 block">Certificate to renew</label>
+        <select id="existing_certificate_id" name="existing_certificate_id" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+          <option value="">— choose a certificate —</option>
+          {{range .RenewableCertificates}}<option value="{{.ID}}">{{.CommonName}} ({{.ExpiresIn}})</option>{{end}}
+        </select>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div data-show-when="type:new">
+          <label for="common_name" class="field-label mb-1 block">Common name</label>
+          <input id="common_name" name="common_name" placeholder="www.example.com" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div data-show-when="type:new">
+          <label for="owner" class="field-label mb-1 block">Owner / team</label>
+          <input id="owner" name="owner" placeholder="Platform team" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+      </div>
+
+      <div data-show-when="trust_class:external" class="hidden">
+        <label for="po_number" class="field-label mb-1 block">PO number</label>
+        <input id="po_number" name="po_number" placeholder="From procurement" class="field-input w-full px-3 py-2 text-sm">
+      </div>
+
+      <div>
+        <label for="justification" class="field-label mb-1 block">Justification</label>
+        <textarea id="justification" name="justification" rows="2"
+                   placeholder="What is this certificate for?" class="field-input w-full px-3 py-2 text-sm"></textarea>
+      </div>
+
+      <button type="submit" class="btn-primary px-4 py-2 text-sm">Submit request</button>
+    </form>
+  </section>
+
+  {{template "request-table" .}}
+</div>
+{{end}}

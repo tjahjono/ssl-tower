@@ -34,6 +34,7 @@ type Alerter interface {
 // exporting the result in whichever format the target platform wants.
 type CertificateService struct {
 	repo         domain.CertificateRepository
+	rootCAs      domain.RootCARepository
 	sealer       *secret.Sealer
 	log          *slog.Logger
 	warningDays  int
@@ -50,14 +51,14 @@ type CertificateOptions struct {
 }
 
 // NewCertificateService builds the service.
-func NewCertificateService(repo domain.CertificateRepository, sealer *secret.Sealer, log *slog.Logger, opts CertificateOptions) *CertificateService {
+func NewCertificateService(repo domain.CertificateRepository, rootCAs domain.RootCARepository, sealer *secret.Sealer, log *slog.Logger, opts CertificateOptions) *CertificateService {
 	if opts.WarningDays <= 0 {
 		opts.WarningDays = 30
 	}
 	if opts.CriticalDays <= 0 {
 		opts.CriticalDays = 7
 	}
-	return &CertificateService{repo: repo, sealer: sealer, log: log, warningDays: opts.WarningDays, criticalDays: opts.CriticalDays}
+	return &CertificateService{repo: repo, rootCAs: rootCAs, sealer: sealer, log: log, warningDays: opts.WarningDays, criticalDays: opts.CriticalDays}
 }
 
 // SetAlerter wires an Alerter to be evaluated after every mutation and
@@ -509,8 +510,139 @@ func (s *CertificateService) Summary(ctx context.Context) (domain.Summary, error
 		default:
 			sum.OK++
 		}
+		switch c.TrustClass() {
+		case domain.TrustInternal:
+			sum.Internal++
+		case domain.TrustExternal:
+			sum.External++
+		}
 	}
 	return sum, nil
+}
+
+// --- internal Root CAs (v1.1) ----------------------------------------------
+
+// UploadRootCA stores an existing Root CA's certificate and private key so
+// SignWithRootCA can issue against it later. Both the key/certificate match
+// and IsCA are hard-rejected, unlike chain validation elsewhere in this
+// app — a chain with problems is still useful to save and inspect, but a
+// "Root CA" that can't actually sign anything (wrong key) or was never a CA
+// to begin with (IsCA false) isn't a Root CA, it's a mistake worth catching
+// at upload time rather than at every future sign attempt.
+func (s *CertificateService) UploadRootCA(ctx context.Context, name, certPEM, keyPEM string) (*domain.RootCA, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, domain.Invalid("name", "a name is required")
+	}
+	certs, err := certutil.ParseCertificatesPEM(certPEM)
+	if err != nil {
+		return nil, domain.Invalid("certificate", err.Error())
+	}
+	cert := certs[0]
+	if !cert.BasicConstraintsValid || !cert.IsCA {
+		return nil, domain.Invalid("certificate", "this certificate is not marked as a CA — it can't be used to sign other certificates")
+	}
+	key, err := certutil.ParsePrivateKeyPEM(keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	if !certutil.MatchesKey(cert, key) {
+		return nil, domain.Invalid("private_key", "this private key does not match the certificate")
+	}
+
+	stored, err := s.sealer.Seal(strings.TrimSpace(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("certificate service: seal root ca key: %w", err)
+	}
+	notBefore, notAfter := cert.NotBefore.UTC(), cert.NotAfter.UTC()
+	pkAlg, pkBits := certutil.DescribePublicKey(cert.PublicKey)
+	sum := sha256.Sum256(cert.Raw)
+	record := &domain.RootCA{
+		Name:                name,
+		CertificatePEM:      certutil.EncodeCertificatePEM(cert),
+		PrivateKeyPEM:       stored,
+		PrivateKeyEncrypted: s.sealer.Enabled(),
+		Subject:             cert.Subject.String(),
+		SignatureAlgorithm:  cert.SignatureAlgorithm.String(),
+		PublicKeyAlgorithm:  pkAlg,
+		KeySize:             pkBits,
+		FingerprintSHA256:   fmt.Sprintf("%x", sum),
+		NotBefore:           &notBefore,
+		NotAfter:            &notAfter,
+	}
+	if err := s.rootCAs.Create(ctx, record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// ListRootCAs returns every uploaded Root CA, newest first.
+func (s *CertificateService) ListRootCAs(ctx context.Context) ([]*domain.RootCA, error) {
+	return s.rootCAs.List(ctx)
+}
+
+// DeleteRootCA removes an uploaded Root CA. Certificates it already signed
+// keep their SignedByRootCAID cleared to NULL by the database (ON DELETE SET
+// NULL) — they stay marked internal via SelfSigned only if they happen to
+// also be self-signed, otherwise they fall back to TrustExternal, which is
+// an acceptable, honestly-labeled outcome for "the CA that made this is gone".
+func (s *CertificateService) DeleteRootCA(ctx context.Context, id uuid.UUID) error {
+	return s.rootCAs.Delete(ctx, id)
+}
+
+// rootCAKey decrypts a Root CA's stored private key and parses it — the
+// Root CA analogue of CertificateService.PrivateKey.
+func (s *CertificateService) rootCAKey(ca *domain.RootCA) (crypto.Signer, error) {
+	if !ca.HasPrivateKey() {
+		return nil, errors.New("certificate service: no private key on file for this root CA")
+	}
+	pemStr, err := s.sealer.Open(ca.PrivateKeyPEM, ca.PrivateKeyEncrypted)
+	if err != nil {
+		return nil, fmt.Errorf("certificate service: root ca private key unavailable: %w", err)
+	}
+	return certutil.ParsePrivateKeyPEM(pemStr)
+}
+
+// SignWithRootCA issues a pending CSR using one of this app's own uploaded
+// Root CAs — the internal-CA counterpart to SelfSign. The Root CA's own
+// certificate becomes the issued certificate's chain (so downloads that
+// bundle a chain have something to include), and the certificate is marked
+// SignedByRootCAID so it classifies as TrustInternal (see
+// domain.Certificate.TrustClass).
+func (s *CertificateService) SignWithRootCA(ctx context.Context, id, rootCAID uuid.UUID, days int) (*domain.Certificate, error) {
+	record, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ca, err := s.rootCAs.GetByID(ctx, rootCAID)
+	if err != nil {
+		return nil, err
+	}
+	caCerts, err := certutil.ParseCertificatesPEM(ca.CertificatePEM)
+	if err != nil || len(caCerts) == 0 {
+		return nil, fmt.Errorf("certificate service: stored root ca certificate is unreadable: %w", err)
+	}
+	caKey, err := s.rootCAKey(ca)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := certutil.ParseCSRPEM(record.CSRPEM)
+	if err != nil {
+		return nil, err
+	}
+	cert, certPEM, err := certutil.SignWithCA(parsed, caCerts[0], caKey, days, record.ExtKeyUsage)
+	if err != nil {
+		return nil, err
+	}
+	applyIssuedCert(record, cert, certPEM, ca.CertificatePEM)
+	record.ChainLength = 2
+	record.SignedByRootCAID = &ca.ID
+
+	if err := s.repo.Update(ctx, record); err != nil {
+		return nil, err
+	}
+	s.evaluate(ctx, record)
+	return record, nil
 }
 
 // AttachCertificate stores the certificate the CA issued for a pending

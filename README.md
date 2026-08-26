@@ -1,4 +1,4 @@
-# SSL Admin
+# SSL Tower
 
 A certificate vault: generate signing requests with their key pairs or upload
 certificates you already have, export the result in whatever encoding the target

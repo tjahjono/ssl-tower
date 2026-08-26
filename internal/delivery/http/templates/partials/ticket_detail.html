@@ -1,0 +1,269 @@
+{{define "ticket-detail-response"}}
+{{template "ticket-detail" .}}
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "ticket-detail"}}
+{{$t := .Ticket}}
+<div id="ticket-detail" class="space-y-6">
+
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div class="min-w-0">
+      <a href="/tickets" class="text-xs text-ink-5 hover:text-ink-3">&larr; All tickets</a>
+      <h1 class="mt-1 truncate text-2xl font-semibold text-ink">{{$t.CommonName}}</h1>
+      <p class="mt-0.5 text-sm text-ink-5">
+        {{$t.Type.Label}} · {{$t.TrustClass.Label}} · requested by {{$t.RequesterEmail}} · {{$t.AgeDays}} day{{if ne $t.AgeDays 1}}s{{end}} old
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-3">
+      {{template "request-status-badge" $t}}
+      {{if $t.OverdueSLA .SLADays}}
+        <span class="inline-flex items-center rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-hue-rose ring-1 ring-inset ring-rose-500/25">
+          Overdue — past the {{.SLADays}}-day SLA since approval
+        </span>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-3">
+    <div class="space-y-6 lg:col-span-2">
+
+      <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+        <h2 class="mb-4 text-sm font-semibold text-ink">Request details</h2>
+        <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {{template "fact" dict "Label" "Common name" "Value" $t.CommonName}}
+          {{template "fact" dict "Label" "Organization" "Value" $t.Organization}}
+          {{template "fact" dict "Label" "Owner / team" "Value" $t.Owner}}
+          {{template "fact" dict "Label" "Additional names" "Value" (join ", " $t.DNSNames)}}
+          {{if $t.RequiresPO}}{{template "fact" dict "Label" "PO number" "Value" $t.PONumber}}{{end}}
+        </dl>
+        {{if $t.Justification}}<div class="mt-4">{{template "fact" dict "Label" "Justification" "Value" $t.Justification}}</div>{{end}}
+        {{if .ExistingCertificate}}
+          <div class="mt-4">
+            <p class="field-label mb-1">Renewing</p>
+            <a href="/certificates/{{.ExistingCertificate.ID}}" class="text-sm text-hue-sky hover:text-hue-sky-strong">
+              {{.ExistingCertificate.CommonName}} ({{.ExistingCertificate.ExpiresIn}})
+            </a>
+          </div>
+        {{end}}
+        {{if .ResultCertificate}}
+          <div class="mt-4">
+            <p class="field-label mb-1">Result certificate</p>
+            <a href="/certificates/{{.ResultCertificate.ID}}" class="text-sm text-hue-sky hover:text-hue-sky-strong">
+              {{.ResultCertificate.CommonName}} — valid until {{formatDate .ResultCertificate.NotAfter}}
+            </a>
+          </div>
+        {{end}}
+      </section>
+
+      {{if eq $t.Status "pending"}}
+        {{if eq $t.TrustClass "internal"}}
+          <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+            <h2 class="mb-1 text-sm font-semibold text-ink">Approve &amp; sign</h2>
+            <p class="mb-4 text-xs text-ink-5">
+              Fill in the certificate's subject fields, pick a Root CA, and submit — this both mints
+              the certificate and fulfills the ticket in one action.
+            </p>
+            {{if .RootCAs}}
+            <form hx-post="/tickets/{{$t.ID}}/approve-internal" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-4">
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label for="ticket-common-name" class="field-label mb-1 block">Common name *</label>
+                  <input id="ticket-common-name" name="common_name" required value="{{$t.CommonName}}" class="field-input w-full px-3 py-2 text-sm">
+                </div>
+                <div>
+                  <label for="ticket-organization" class="field-label mb-1 block">Organization</label>
+                  <input id="ticket-organization" name="organization" value="{{$t.Organization}}" class="field-input w-full px-3 py-2 text-sm">
+                </div>
+              </div>
+              <div>
+                <label for="ticket-sans" class="field-label mb-1 block">Subject alternative names</label>
+                <textarea id="ticket-sans" name="sans" rows="3" spellcheck="false"
+                          class="field-input w-full px-3 py-2 font-mono text-xs">{{join "\n" $t.DNSNames}}</textarea>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label for="ticket-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
+                  <select id="ticket-key-algorithm" name="key_algorithm" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                    <option value="rsa">RSA</option>
+                    <option value="ecdsa">ECDSA</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="ticket-key-bits" class="field-label mb-1 block">Key size (RSA)</label>
+                  <select id="ticket-key-bits" name="key_bits" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                    <option value="2048">2048 bit</option>
+                    <option value="3072">3072 bit</option>
+                    <option value="4096">4096 bit</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="ticket-key-curve" class="field-label mb-1 block">Curve (ECDSA)</label>
+                  <select id="ticket-key-curve" name="key_curve" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                    <option value="P-256">P-256</option>
+                    <option value="P-384">P-384</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label for="ticket-owner" class="field-label mb-1 block">Owner / team</label>
+                  <input id="ticket-owner" name="owner" value="{{$t.Owner}}" class="field-input w-full px-3 py-2 text-sm">
+                </div>
+                <div>
+                  <label for="ticket-root-ca" class="field-label mb-1 block">Root CA *</label>
+                  <select id="ticket-root-ca" name="root_ca_id" required class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                    {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                  </select>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <label for="ticket-days" class="text-xs text-ink-5">Valid for</label>
+                <input id="ticket-days" name="days" type="number" min="1" max="3650" value="365" class="field-input w-24 px-3 py-1.5 text-sm">
+                <span class="text-xs text-ink-5">days</span>
+              </div>
+              <button type="submit" class="btn-primary px-4 py-2 text-sm">Approve &amp; sign</button>
+            </form>
+            {{else}}
+            <p class="text-xs text-ink-6">
+              No Root CAs uploaded yet — an admin can add one on the
+              <a href="/certificates/issuers" class="text-hue-sky hover:text-hue-sky-strong">Issuers</a> page before this ticket can be approved.
+            </p>
+            {{end}}
+          </section>
+        {{else}}
+          <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+            <h2 class="mb-1 text-sm font-semibold text-ink">Approve</h2>
+            <p class="mb-4 text-xs text-ink-5">
+              Approving moves this ticket to "in progress" — procure the certificate from the
+              external CA using PO {{$t.PONumber}}, then come back and attach it once it's issued.
+            </p>
+            <button type="button" hx-post="/tickets/{{$t.ID}}/approve-external" hx-target="#ticket-detail" hx-swap="outerHTML"
+                    class="btn-primary px-4 py-2 text-sm">Approve</button>
+          </section>
+        {{end}}
+
+        <section class="rounded-xl border border-rose-500/15 bg-rose-500/[0.03] p-5">
+          <h2 class="mb-1 text-sm font-semibold text-hue-rose-strong">Reject</h2>
+          <form hx-post="/tickets/{{$t.ID}}/reject" hx-target="#ticket-detail" hx-swap="outerHTML" class="mt-3 space-y-3">
+            <textarea name="reason" rows="2" required placeholder="Why is this being rejected?"
+                      class="field-input w-full px-3 py-2 text-sm"></textarea>
+            <button type="submit" class="rounded-lg bg-rose-500/10 px-4 py-2 text-sm font-medium text-hue-rose-strong ring-1 ring-inset ring-rose-500/25 transition hover:bg-rose-500/20">
+              Reject ticket
+            </button>
+          </form>
+        </section>
+      {{end}}
+
+      {{if and (eq $t.Status "in_progress") (eq $t.TrustClass "external")}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">Attach the issued certificate</h2>
+          <p class="mb-4 text-xs text-ink-5">
+            Paste the PEM the external CA returned. A full chain is fine — the first block is
+            stored as the leaf. Attaching it fulfills and closes this ticket.
+          </p>
+          <form hx-post="/tickets/{{$t.ID}}/fulfill-external" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-3">
+            <div>
+              <label for="ticket-cert-pem" class="field-label mb-1 block">Certificate PEM *</label>
+              <textarea id="ticket-cert-pem" name="certificate_pem" rows="6" required spellcheck="false"
+                        placeholder="-----BEGIN CERTIFICATE-----"
+                        class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
+            </div>
+            <div>
+              <label for="ticket-chain-pem" class="field-label mb-1 block">Additional chain PEM <span class="normal-case text-ink-6">(optional)</span></label>
+              <textarea id="ticket-chain-pem" name="chain_pem" rows="4" spellcheck="false"
+                        class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
+            </div>
+            <div>
+              <label for="ticket-key-pem" class="field-label mb-1 block">Private key PEM <span class="normal-case text-ink-6">(optional)</span></label>
+              <textarea id="ticket-key-pem" name="private_key_pem" rows="4" spellcheck="false"
+                        class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
+            </div>
+            <button type="submit" class="btn-primary px-4 py-2 text-sm">Attach &amp; fulfill</button>
+          </form>
+        </section>
+      {{end}}
+
+      {{if .ResultCertificate}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">Download certificate</h2>
+          <p class="mb-4 text-xs text-ink-5">
+            Whatever is on file for the result, encoded for whichever platform needs it — grab it
+            here to send to the requester, no need to open the certificate vault separately.
+          </p>
+          {{if .CanDownloadResult}}
+            {{if .ResultFormats}}
+              {{template "download-panel" dict "ID" (printf "ticket-%s" .ResultCertificate.ID) "Action" (printf "/certificates/%s/download" .ResultCertificate.ID) "Formats" .ResultFormats}}
+            {{else}}
+              <p class="text-sm text-ink-5">Nothing to download yet.</p>
+            {{end}}
+          {{else if and .CanExportResultCSR (hasValue .ResultCertificate.CSRPEM)}}
+            <p class="mb-4 text-xs text-ink-5">
+              Only an admin can download the certificate or any key material. As an editor you can
+              still export the bare signing request to send to a CA yourself.
+            </p>
+            <a href="/certificates/{{.ResultCertificate.ID}}/download?format=csr" class="btn-secondary block w-full px-3 py-2 text-center text-sm">
+              Download signing request (.csr)
+            </a>
+          {{else}}
+            <p class="text-sm text-ink-5">Only an admin can download certificates and key material.</p>
+          {{end}}
+          <a href="/certificates/{{.ResultCertificate.ID}}" class="mt-3 inline-block text-xs text-hue-sky hover:text-hue-sky-strong">
+            Open full certificate detail &rarr;
+          </a>
+        </section>
+      {{end}}
+
+      {{if eq $t.Status "rejected"}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">Rejection reason</h2>
+          <p class="text-sm text-ink-3">{{$t.RejectionReason}}</p>
+        </section>
+      {{end}}
+
+      {{if eq $t.Status "fulfilled"}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">Delivery</h2>
+          {{if $t.Delivered}}
+            <p class="text-sm text-hue-emerald">Delivered to the requester.</p>
+          {{else}}
+            <p class="mb-4 text-xs text-ink-5">
+              No certificate is ever downloadable by the requester — send it to them by hand, then
+              mark this delivered so the ticket queue reflects that the loop is closed.
+            </p>
+            <button type="button" hx-post="/tickets/{{$t.ID}}/deliver" hx-target="#ticket-detail" hx-swap="outerHTML"
+                    class="btn-secondary px-4 py-2 text-sm">Mark delivered</button>
+          {{end}}
+        </section>
+      {{end}}
+    </div>
+
+    <div class="space-y-6">
+      {{if $t.Status.Open}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-3 text-sm font-semibold text-ink">Cancel</h2>
+          <button type="button"
+                  hx-post="/tickets/{{$t.ID}}/cancel"
+                  hx-confirm="Cancel this ticket?"
+                  hx-target="#ticket-detail" hx-swap="outerHTML"
+                  class="w-full rounded-lg bg-rose-500/10 px-3 py-2 text-sm font-medium text-hue-rose-strong ring-1 ring-inset ring-rose-500/25 transition hover:bg-rose-500/20">
+            Cancel ticket
+          </button>
+        </section>
+      {{end}}
+
+      <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+        <h2 class="mb-3 text-sm font-semibold text-ink">Timeline</h2>
+        <dl class="space-y-3 text-xs">
+          {{template "fact" dict "Label" "Submitted" "Value" (formatStamp $t.CreatedAt)}}
+          {{if $t.ApprovedAt}}{{template "fact" dict "Label" "Approved" "Value" (formatStampPtr $t.ApprovedAt)}}{{end}}
+          {{if $t.RejectedAt}}{{template "fact" dict "Label" "Rejected" "Value" (formatStampPtr $t.RejectedAt)}}{{end}}
+          {{if $t.FulfilledAt}}{{template "fact" dict "Label" "Fulfilled" "Value" (formatStampPtr $t.FulfilledAt)}}{{end}}
+          {{if $t.CancelledAt}}{{template "fact" dict "Label" "Cancelled" "Value" (formatStampPtr $t.CancelledAt)}}{{end}}
+          {{if $t.DeliveredAt}}{{template "fact" dict "Label" "Delivered" "Value" (formatStampPtr $t.DeliveredAt)}}{{end}}
+        </dl>
+      </section>
+    </div>
+  </div>
+</div>
+{{end}}

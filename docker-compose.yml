@@ -60,6 +60,9 @@ services:
       # any account exists. `make env` generates a random password for this.
       ADMIN_EMAIL: "${ADMIN_EMAIL:-}"
       ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-}"
+      # SLA window (days since approval) before an open certificate request
+      # ticket is flagged overdue on the ticket queue.
+      TICKET_SLA_DAYS: "${TICKET_SLA_DAYS:-3}"
     ports:
       - "8080:8080"
 

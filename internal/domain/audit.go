@@ -19,6 +19,7 @@ const (
 	AuditUserCreated            = "user_created"
 	AuditUserRoleChanged        = "user_role_changed"
 	AuditUserPasswordReset      = "user_password_reset"
+	AuditUserMFAReset           = "user_mfa_reset"
 	AuditUserDeleted            = "user_deleted"
 	AuditCertificateCreated     = "certificate_created"
 	AuditCertificateImported    = "certificate_imported"
@@ -29,6 +30,16 @@ const (
 	AuditKeyDownloaded          = "private_key_downloaded"
 	AuditHelpContentUpdated     = "help_content_updated"
 	AuditCertificateChainEdited = "certificate_chain_edited"
+	AuditCertificateSignedByCA  = "certificate_signed_by_root_ca"
+	AuditRootCAUploaded         = "root_ca_uploaded"
+	AuditRootCADeleted          = "root_ca_deleted"
+
+	AuditRequestSubmitted = "certificate_request_submitted"
+	AuditRequestApproved  = "certificate_request_approved"
+	AuditRequestRejected  = "certificate_request_rejected"
+	AuditRequestFulfilled = "certificate_request_fulfilled"
+	AuditRequestDelivered = "certificate_request_delivered"
+	AuditRequestCancelled = "certificate_request_cancelled"
 )
 
 // AuditEntry is one recorded action in the admin-facing audit trail. Actor

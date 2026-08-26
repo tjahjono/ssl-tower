@@ -134,6 +134,11 @@ type Certificate struct {
 	CertificatePEM      string
 	ChainPEM            string
 	SelfSigned          bool
+	// SignedByRootCAID is set when CertificateService.SignWithRootCA issued
+	// this certificate against one of this app's own uploaded Root CAs — nil
+	// for everything else (self-signed, uploaded/attached from an outside
+	// CA, or still pending). See TrustClass.
+	SignedByRootCAID *uuid.UUID
 
 	// Subject/Issuer and the fields below are captured once, at the moment a
 	// certificate becomes issued (self-signed, CA-attached, or uploaded) —
@@ -264,6 +269,45 @@ func (c *Certificate) IsSelfSigned() bool {
 	return c != nil && c.Subject != "" && c.Subject == c.Issuer
 }
 
+// CertTrustClass separates a certificate signed within this app (by its own
+// key, or by one of its uploaded Root CAs) from one that came from an
+// outside CA — the v1.1 dashboard/list split. It's derived, not stored:
+// nothing about it is persisted beyond the fields it's computed from.
+type CertTrustClass string
+
+// Trust classes. TrustPending is deliberately distinct from TrustExternal —
+// a CSR with no certificate yet hasn't earned either label.
+const (
+	TrustInternal CertTrustClass = "internal"
+	TrustExternal CertTrustClass = "external"
+	TrustPending  CertTrustClass = ""
+)
+
+// Label renders the trust class for humans.
+func (t CertTrustClass) Label() string {
+	switch t {
+	case TrustInternal:
+		return "Internal"
+	case TrustExternal:
+		return "External"
+	default:
+		return "Pending"
+	}
+}
+
+// TrustClass classifies an issued certificate as internal (self-signed, or
+// signed by a Root CA this app holds) or external (uploaded/attached from
+// an outside CA) — empty for anything not yet issued.
+func (c *Certificate) TrustClass() CertTrustClass {
+	if c == nil || !c.HasCertificate() {
+		return TrustPending
+	}
+	if c.SelfSigned || c.SignedByRootCAID != nil {
+		return TrustInternal
+	}
+	return TrustExternal
+}
+
 // SubjectCommonName pulls the CN out of the stored subject DN.
 func (c *Certificate) SubjectCommonName() string {
 	if c == nil {
@@ -370,6 +414,11 @@ type CertificateFilter struct {
 	Search string
 	Status CertLifecycle
 	Origin CertOrigin
+	// Trust filters by CertTrustClass ("internal"/"external"). Empty means
+	// no filtering by trust class — this is deliberately not the same zero
+	// value as TrustPending, which is why the repository matches it against
+	// the raw string rather than the CertTrustClass type.
+	Trust string
 }
 
 // Summary powers the dashboard tiles. Computed in Go from a loaded list
@@ -383,6 +432,10 @@ type Summary struct {
 	Critical int
 	Expired  int
 	Pending  int
+	// Internal/External split issued certificates by CertTrustClass — they
+	// don't include Pending, so Internal+External+Pending == Total.
+	Internal int
+	External int
 }
 
 // CertificateRepository is the persistence port for the certificate vault.

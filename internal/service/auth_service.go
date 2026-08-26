@@ -69,7 +69,7 @@ func NewAuthService(repo domain.UserRepository, log *slog.Logger, opts AuthOptio
 		opts.LockoutWindow = 15 * time.Minute
 	}
 	if opts.Issuer == "" {
-		opts.Issuer = "SSL Admin"
+		opts.Issuer = "SSL Tower"
 	}
 	return &AuthService{repo: repo, log: log, opts: opts}
 }
@@ -408,6 +408,30 @@ func (a *AuthService) ResetPassword(ctx context.Context, id uuid.UUID, newPasswo
 	u.PasswordHash = hash
 	u.MustChangePassword = true
 	if err := a.repo.UpdateUser(ctx, u); err != nil {
+		return err
+	}
+	return a.repo.DeleteSessionsForUser(ctx, id)
+}
+
+// ResetMFA clears an account's TOTP enrollment and unused recovery codes,
+// and signs it out everywhere — mirroring ResetPassword's shape. Clearing
+// MFAEnabled means NeedsMFAEnrollment is true again, so the forced-onboarding
+// middleware (auth_middleware.go) walks the holder straight back through
+// /account/mfa/enroll on their next login, exactly like a brand-new account.
+// This is for the case a device with the authenticator app is lost, stolen,
+// or compromised — the old secret and any recovery codes tied to it must
+// stop working, not just get supplemented by a new secret.
+func (a *AuthService) ResetMFA(ctx context.Context, id uuid.UUID) error {
+	u, err := a.repo.GetUserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	u.TOTPSecret = ""
+	u.MFAEnabled = false
+	if err := a.repo.UpdateUser(ctx, u); err != nil {
+		return err
+	}
+	if err := a.repo.ReplaceRecoveryCodes(ctx, id, nil); err != nil {
 		return err
 	}
 	return a.repo.DeleteSessionsForUser(ctx, id)
