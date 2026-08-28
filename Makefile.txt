@@ -91,9 +91,18 @@ docker-image: ## Build the app image for a Swarm deploy (docker-stack.yml)
 	docker build -t ssl-tower:1.1 .
 
 .PHONY: docker-secrets
-docker-secrets: ## Create every Docker secret docker-stack.yml needs, unless it already exists
+docker-secrets: ## Create every Docker secret docker-stack.yml needs, sourced from .env where a value exists (unless the secret already exists)
 	@command -v docker >/dev/null || { echo "docker is required"; exit 1; }
-	@DB_PASSWORD=$$(openssl rand -base64 24); \
+	@env_val() { \
+		[ -f .env ] || return 0; \
+		line=$$(grep -E "^$$1=" .env | tail -1); \
+		val=$${line#*=}; \
+		case "$$val" in \
+			\"*\") val=$${val#\"}; val=$${val%\"} ;; \
+			\'*\') val=$${val#\'}; val=$${val%\'} ;; \
+		esac; \
+		printf '%s' "$$val"; \
+	}; \
 	create_if_missing() { \
 		name=$$1; value=$$2; \
 		if docker secret inspect $$name >/dev/null 2>&1; then \
@@ -103,14 +112,41 @@ docker-secrets: ## Create every Docker secret docker-stack.yml needs, unless it 
 			echo "created $$name"; \
 		fi; \
 	}; \
+	DB_URL_FROM_ENV=$$(env_val DATABASE_URL); \
+	DB_PASSWORD=$$(printf '%s' "$$DB_URL_FROM_ENV" | sed -n 's#^postgres://[^:]*:\([^@]*\)@.*#\1#p'); \
+	if [ -z "$$DB_PASSWORD" ]; then \
+		DB_PASSWORD=$$(openssl rand -base64 24); \
+		echo "no DATABASE_URL password found in .env — generated a fresh one for the Swarm secrets"; \
+	else \
+		echo "reusing the DB password already in .env's DATABASE_URL"; \
+	fi; \
 	create_if_missing ssl_tower_db_password "$$DB_PASSWORD"; \
 	create_if_missing ssl_tower_database_url "postgres://ssl_tower:$$DB_PASSWORD@postgres:5432/ssl_generator?sslmode=disable"; \
-	create_if_missing ssl_tower_encryption_key "$$(openssl rand -base64 32)"; \
-	create_if_missing ssl_tower_session_secret "$$(openssl rand -base64 32)"; \
-	ADMIN_PW=$$(openssl rand -base64 18); \
+	ENC_KEY=$$(env_val APP_ENCRYPTION_KEY); [ -n "$$ENC_KEY" ] || ENC_KEY=$$(openssl rand -base64 32); \
+	create_if_missing ssl_tower_encryption_key "$$ENC_KEY"; \
+	SESSION_SECRET=$$(env_val SESSION_SECRET); [ -n "$$SESSION_SECRET" ] || SESSION_SECRET=$$(openssl rand -base64 32); \
+	create_if_missing ssl_tower_session_secret "$$SESSION_SECRET"; \
+	ADMIN_PW=$$(env_val ADMIN_INITIAL_PASSWORD); \
+	if [ -z "$$ADMIN_PW" ]; then \
+		ADMIN_PW=$$(openssl rand -base64 18); \
+		echo "First login (only takes effect on a clean database): admin@example.com / $$ADMIN_PW"; \
+	else \
+		echo "using the ADMIN_INITIAL_PASSWORD already in .env"; \
+	fi; \
 	create_if_missing ssl_tower_admin_password "$$ADMIN_PW"; \
-	echo "First login (only takes effect on a clean database): admin@example.com / $$ADMIN_PW"
-	@echo "Re-run 'docker secret inspect <name>' any time to check what exists — a secret already created is left untouched, since Docker secrets are immutable."
+	SMTP_PW=$$(env_val SMTP_PASSWORD); \
+	if [ -n "$$SMTP_PW" ]; then \
+		create_if_missing ssl_tower_smtp_password "$$SMTP_PW"; \
+	else \
+		echo "SMTP_PASSWORD is empty in .env — skipping ssl_tower_smtp_password (leave it commented out in docker-stack.yml too, or email alerts stay off)"; \
+	fi; \
+	TEAMS_URL=$$(env_val TEAMS_WEBHOOK_URL); \
+	if [ -n "$$TEAMS_URL" ]; then \
+		create_if_missing ssl_tower_teams_webhook "$$TEAMS_URL"; \
+	else \
+		echo "TEAMS_WEBHOOK_URL is empty in .env — skipping ssl_tower_teams_webhook (leave it commented out in docker-stack.yml too, or Teams alerts stay off)"; \
+	fi
+	@echo "Re-run 'docker secret inspect <name>' any time to check what exists — a secret already created is left untouched, since Docker secrets are immutable. To pick up a changed .env value, create a new secret under a new name and update docker-stack.yml's reference to it (see that file's header comment)."
 
 .PHONY: docker-stack-deploy
 docker-stack-deploy: docker-image docker-secrets ## Build, create secrets, and deploy the Swarm stack

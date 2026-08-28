@@ -1,0 +1,231 @@
+package service
+
+import (
+	"context"
+	"testing"
+
+	"github.com/ivangiovn/ssl-generator/internal/domain"
+)
+
+// fakeSettingsRepository is a minimal in-memory domain.SettingsRepository,
+// mirroring the fake*Repo shape used throughout this package's tests.
+type fakeSettingsRepository struct {
+	values    map[string]string
+	updatedBy string
+	setCalls  int
+}
+
+func newFakeSettingsRepository() *fakeSettingsRepository {
+	return &fakeSettingsRepository{values: map[string]string{}}
+}
+
+func (f *fakeSettingsRepository) Get(_ context.Context, key string) (string, bool, error) {
+	v, ok := f.values[key]
+	return v, ok, nil
+}
+
+func (f *fakeSettingsRepository) GetAll(_ context.Context) (map[string]string, error) {
+	out := make(map[string]string, len(f.values))
+	for k, v := range f.values {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (f *fakeSettingsRepository) SetMany(_ context.Context, values map[string]string, updatedBy string) error {
+	for k, v := range values {
+		f.values[k] = v
+	}
+	f.updatedBy = updatedBy
+	f.setCalls++
+	return nil
+}
+
+var _ domain.SettingsRepository = (*fakeSettingsRepository)(nil)
+
+func testSeed() SeedValues {
+	return SeedValues{
+		Settings: domain.AppSettings{
+			ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1,
+			SMTPHost: "smtp.example.com", SMTPPort: 587, SMTPUsername: "user", SMTPPassword: "pass",
+			AlertEmailFrom: "alerts@example.com", AlertEmailTo: []string{"team@example.com"},
+			TeamsWebhookURL: "https://example.com/webhook",
+			TicketSLADays:   3,
+		},
+		EncryptionKey: "seed-key",
+	}
+}
+
+func TestBootstrapSeedsEveryKeyOnFreshDatabase(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	cur := svc.Current()
+	if cur.ExpiryWarningDays != 30 || cur.ExpiryCriticalDays != 7 || cur.ExpiryFinalDays != 1 {
+		t.Fatalf("expiry thresholds not seeded: %+v", cur)
+	}
+	if cur.SMTPHost != "smtp.example.com" || cur.SMTPPort != 587 {
+		t.Fatalf("SMTP settings not seeded: %+v", cur)
+	}
+	if cur.TicketSLADays != 3 {
+		t.Fatalf("TicketSLADays = %d, want 3", cur.TicketSLADays)
+	}
+	key, err := svc.EncryptionKeyValue(context.Background())
+	if err != nil {
+		t.Fatalf("EncryptionKeyValue: %v", err)
+	}
+	if key != "seed-key" {
+		t.Fatalf("EncryptionKeyValue = %q, want seed-key", key)
+	}
+}
+
+// TestBootstrapNeverOverwritesAlreadySeededKeys is the core guarantee this
+// service exists for: once app_settings has a row for a key (an admin
+// edited it, or an earlier boot seeded it), later boots must leave it
+// alone even if .env's seed value has since changed — the portal is
+// authoritative from that point on, not .env.
+func TestBootstrapNeverOverwritesAlreadySeededKeys(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("first Bootstrap: %v", err)
+	}
+
+	// Simulate an admin editing one setting through the portal after the
+	// first boot.
+	if err := svc.Update(context.Background(), domain.AppSettings{
+		ExpiryWarningDays: 45, ExpiryCriticalDays: 10, ExpiryFinalDays: 2,
+		SMTPHost: "smtp.example.com", SMTPPort: 587,
+		TicketSLADays: 3,
+	}, "admin@example.com"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// A later boot with a *different* .env seed must not clobber the
+	// admin's edit.
+	laterSeed := testSeed()
+	laterSeed.Settings.ExpiryWarningDays = 999
+	laterSeed.EncryptionKey = "a-different-key"
+	if err := svc.Bootstrap(context.Background(), laterSeed); err != nil {
+		t.Fatalf("second Bootstrap: %v", err)
+	}
+
+	if got := svc.Current().ExpiryWarningDays; got != 45 {
+		t.Fatalf("ExpiryWarningDays = %d, want 45 (the admin's edit, not the later .env seed's 999)", got)
+	}
+	key, err := svc.EncryptionKeyValue(context.Background())
+	if err != nil {
+		t.Fatalf("EncryptionKeyValue: %v", err)
+	}
+	if key != "seed-key" {
+		t.Fatalf("EncryptionKeyValue = %q, want the original seed-key untouched by the second boot's seed", key)
+	}
+}
+
+// TestBootstrapSeedsOnlyMissingKeysIndividually confirms seeding is checked
+// per-key, not table-wide — a brand-new setting key added in a future
+// version still gets seeded even when every other key already has a row.
+func TestBootstrapSeedsOnlyMissingKeysIndividually(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	repo.values[domain.SettingTicketSLADays] = "9" // pretend an admin already set this one
+
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	cur := svc.Current()
+	if cur.TicketSLADays != 9 {
+		t.Fatalf("TicketSLADays = %d, want the pre-existing 9 left untouched", cur.TicketSLADays)
+	}
+	if cur.ExpiryWarningDays != 30 {
+		t.Fatalf("ExpiryWarningDays = %d, want 30 seeded from testSeed()", cur.ExpiryWarningDays)
+	}
+}
+
+func TestUpdateRejectsCriticalDaysAboveWarningDays(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	err := svc.Update(context.Background(), domain.AppSettings{
+		ExpiryWarningDays: 7, ExpiryCriticalDays: 30, ExpiryFinalDays: 1,
+		TicketSLADays: 3,
+	}, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError for critical > warning, got %v", err)
+	}
+}
+
+func TestUpdateRejectsFinalDaysAboveCriticalDays(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	err := svc.Update(context.Background(), domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 20,
+		TicketSLADays: 3,
+	}, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError for final > critical, got %v", err)
+	}
+}
+
+func TestUpdateTakesEffectImmediatelyOnCurrent(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	patch := domain.AppSettings{
+		ExpiryWarningDays: 20, ExpiryCriticalDays: 5, ExpiryFinalDays: 1,
+		SMTPHost: "smtp.new.example.com", SMTPPort: 25,
+		TicketSLADays: 5,
+	}
+	if err := svc.Update(context.Background(), patch, "admin@example.com"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	cur := svc.Current()
+	if cur.ExpiryWarningDays != 20 || cur.SMTPHost != "smtp.new.example.com" || cur.TicketSLADays != 5 {
+		t.Fatalf("Current() didn't reflect Update's patch: %+v", cur)
+	}
+	if repo.updatedBy != "admin@example.com" {
+		t.Fatalf("repo updatedBy = %q, want admin@example.com", repo.updatedBy)
+	}
+}
+
+// TestEncryptionKeyValueNeverAppearsInAppSettings confirms the encryption
+// key stays out of the generic get-all/update surface entirely — it's read
+// through its own dedicated method, never via Current().
+func TestEncryptionKeyValueNeverAppearsInAppSettings(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// domain.AppSettings has no encryption-key field for a stray seed-key
+	// value to leak into — this assertion documents that invariant by
+	// confirming Update's own field set never includes it, i.e. an Update
+	// call can't accidentally clobber the encryption key.
+	if err := svc.Update(context.Background(), domain.AppSettings{TicketSLADays: 3}, "admin@example.com"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	key, err := svc.EncryptionKeyValue(context.Background())
+	if err != nil {
+		t.Fatalf("EncryptionKeyValue: %v", err)
+	}
+	if key != "seed-key" {
+		t.Fatalf("EncryptionKeyValue = %q, want seed-key unaffected by an unrelated Update", key)
+	}
+}

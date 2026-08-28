@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/certutil"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
 )
 
@@ -29,26 +31,34 @@ const requestColor = "0EA5E9"
 // fulfillment call here — this service only owns the ticket's own
 // lifecycle and bookkeeping.
 type CertificateRequestService struct {
-	repo    domain.CertificateRequestRepository
-	certs   *CertificateService
-	email   *notify.EmailNotifier
-	teams   *notify.TeamsNotifier
-	log     *slog.Logger
-	slaDays int
+	repo     domain.CertificateRequestRepository
+	certs    *CertificateService
+	settings *SettingsService
+	log      *slog.Logger
 }
 
-// NewCertificateRequestService builds the service. email and teams may be
-// notifiers built from empty configuration, exactly as AlertService uses
-// them — Send/Enabled on both handle that as a no-op.
-func NewCertificateRequestService(repo domain.CertificateRequestRepository, certs *CertificateService, email *notify.EmailNotifier, teams *notify.TeamsNotifier, log *slog.Logger, slaDays int) *CertificateRequestService {
-	if slaDays <= 0 {
-		slaDays = 3
-	}
-	return &CertificateRequestService{repo: repo, certs: certs, email: email, teams: teams, log: log, slaDays: slaDays}
+// NewCertificateRequestService builds the service. Email/Teams notifiers and
+// the SLA window are read live from settings at the point of use (see
+// notify, SLADays, EmailReady) rather than held as fixed fields — same
+// "reconstruct fresh from settings on every use" pattern AlertService uses,
+// so an admin's SMTP/Teams/SLA change in the portal takes effect on the very
+// next ticket action, no restart needed.
+func NewCertificateRequestService(repo domain.CertificateRequestRepository, certs *CertificateService, settings *SettingsService, log *slog.Logger) *CertificateRequestService {
+	return &CertificateRequestService{repo: repo, certs: certs, settings: settings, log: log}
 }
 
 // SLADays exposes the configured SLA window for display on the ticket queue.
-func (s *CertificateRequestService) SLADays() int { return s.slaDays }
+func (s *CertificateRequestService) SLADays() int {
+	if days := s.settings.Current().TicketSLADays; days > 0 {
+		return days
+	}
+	return 3
+}
+
+// EmailReady reports whether enough SMTP configuration is present to attempt
+// SendCertificateEmail — used by the ticket detail page to explain why the
+// "send by email" form is unavailable rather than just letting it fail.
+func (s *CertificateRequestService) EmailReady() bool { return s.settings.EmailNotifier().TransportReady() }
 
 // SubmitInput is the requester-facing ticket submission form.
 type SubmitInput struct {
@@ -367,17 +377,168 @@ func (s *CertificateRequestService) Deliver(ctx context.Context, in DeliverInput
 	return r, nil
 }
 
+// SendCertificateEmailInput is the ticket detail page's "send by email" form.
+// IncludeKey must already be resolved to a real decision by the caller (the
+// http handler zeroes it for anyone who isn't CanManageUsers(), exactly
+// mirroring handleCertificateDownload's own admin-vs-editor gate) — this
+// service trusts the value it's given rather than re-checking a role it has
+// no notion of.
+type SendCertificateEmailInput struct {
+	TicketID   uuid.UUID
+	ActorID    uuid.UUID
+	Format     string
+	Recipient  string
+	IncludeKey bool
+}
+
+// SendCertificateEmail exports the ticket's result certificate and emails it
+// directly to the given recipient — the alternative to the existing
+// "download it, then hand it over by hand" flow. A successful send also
+// closes the delivery loop automatically: emailing the certificate to the
+// requester *is* handing it over, so this sets DeliveredBy/DeliveredAt the
+// same way a manual "Mark delivered" click does, unless the ticket is
+// already marked delivered. The plain "Mark delivered" button stays
+// available for the out-of-band case (handed over in person, posted
+// elsewhere, etc.).
+func (s *CertificateRequestService) SendCertificateEmail(ctx context.Context, in SendCertificateEmailInput) (*domain.CertificateRequest, error) {
+	r, err := s.repo.GetByID(ctx, in.TicketID)
+	if err != nil {
+		return nil, err
+	}
+	if r.ResultCertificateID == nil {
+		return nil, domain.Invalid("status", "this ticket has no certificate to send yet")
+	}
+	recipient := strings.TrimSpace(in.Recipient)
+	if recipient == "" {
+		return nil, domain.Invalid("recipient", "a recipient email address is required")
+	}
+	email := s.settings.EmailNotifier()
+	if !email.TransportReady() {
+		return nil, domain.Invalid("email", "email isn't configured on this server — set SMTP_HOST and ALERT_EMAIL_FROM")
+	}
+
+	result, err := s.certs.Export(ctx, *r.ResultCertificateID, ExportOptions{Format: in.Format})
+	if err != nil {
+		return nil, fmt.Errorf("export certificate: %w", err)
+	}
+	attachments := []notify.Attachment{{Filename: result.Filename, ContentType: result.ContentType, Data: result.Data}}
+	if in.IncludeKey {
+		keyResult, err := s.certs.Export(ctx, *r.ResultCertificateID, ExportOptions{Format: certutil.FormatKEY})
+		if err != nil {
+			return nil, fmt.Errorf("export private key: %w", err)
+		}
+		attachments = append(attachments, notify.Attachment{Filename: keyResult.Filename, ContentType: keyResult.ContentType, Data: keyResult.Data})
+	}
+
+	subject := fmt.Sprintf("Your certificate: %s", r.CommonName)
+	body := fmt.Sprintf(
+		"Attached is the certificate you requested for %s.\n\nRequest ticket: %s\n\nThis was sent automatically by SSL Tower — reply to your usual contact there if anything looks wrong.",
+		r.CommonName, r.ID,
+	)
+	if err := email.SendWithAttachment([]string{recipient}, subject, body, attachments...); err != nil {
+		return nil, fmt.Errorf("send email: %w", err)
+	}
+
+	if r.Status == domain.RequestFulfilled && !r.Delivered() {
+		now := time.Now().UTC()
+		r.DeliveredBy = &in.ActorID
+		r.DeliveredAt = &now
+		if err := s.repo.Update(ctx, r); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// AutoDraftRenewals scans every issued internal certificate approaching (or
+// past) expiry and, for each one that can be traced back to the ticket that
+// originally produced it and doesn't already have an open renewal ticket,
+// creates a new pending renewal ticket on that requester's behalf —
+// AutoGenerated, so the ticket queue can tell it apart from one a requester
+// actually typed. It returns how many tickets were drafted.
+//
+// Scoped to internal certificates only, mirroring BulkRenewInternal's own
+// scope: external renewal (DigiCert, a later phase) is deliberately an
+// explicit admin click, not something a sweeper should submit to a paid CA
+// unattended. A certificate with no resolvable origin ticket — generated
+// directly in the vault, or produced by a bulk renewal, neither of which
+// goes through the ticket system — has no requester to draft a ticket for
+// and is silently skipped; that's an accepted gap, not a bug, since there's
+// nobody to notify in that case anyway.
+func (s *CertificateRequestService) AutoDraftRenewals(ctx context.Context) (int, error) {
+	certs, err := s.certs.List(ctx, domain.CertificateFilter{Status: domain.CertIssued, Trust: string(domain.TrustInternal)})
+	if err != nil {
+		return 0, fmt.Errorf("auto-draft renewals: list certificates: %w", err)
+	}
+	warningDays, criticalDays := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
+
+	drafted := 0
+	for _, c := range certs {
+		if c.HealthStatus(warningDays, criticalDays, warningPct, criticalPct) == domain.StatusOK {
+			continue
+		}
+
+		origin, err := s.repo.LatestByResultCertificateID(ctx, c.ID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				continue
+			}
+			return drafted, fmt.Errorf("auto-draft renewals: find origin ticket for %s: %w", c.ID, err)
+		}
+
+		open, err := s.repo.HasOpenRenewalFor(ctx, c.ID)
+		if err != nil {
+			return drafted, fmt.Errorf("auto-draft renewals: check existing renewal for %s: %w", c.ID, err)
+		}
+		if open {
+			continue
+		}
+
+		certID := c.ID
+		r := &domain.CertificateRequest{
+			RequesterID:           origin.RequesterID,
+			RequesterEmail:        origin.RequesterEmail,
+			Type:                  domain.RequestRenewal,
+			TrustClass:            domain.TrustInternal,
+			ExistingCertificateID: &certID,
+			CommonName:            c.CommonName,
+			DNSNames:              append(append([]string{}, c.DNSNames...), c.IPAddresses...),
+			Organization:          c.Organization,
+			Owner:                 c.Owner,
+			Justification:         fmt.Sprintf("Auto-drafted — certificate expires in %s.", c.ExpiresIn()),
+			Status:                domain.RequestPending,
+			AutoGenerated:         true,
+		}
+		if err := r.Validate(); err != nil {
+			s.log.Warn("auto-draft renewals: drafted ticket failed validation, skipping", "certificate", c.ID, "error", err)
+			continue
+		}
+		if err := s.repo.Create(ctx, r); err != nil {
+			return drafted, fmt.Errorf("auto-draft renewals: create ticket for %s: %w", c.ID, err)
+		}
+		drafted++
+
+		s.notify(ctx, fmt.Sprintf("Renewal ticket auto-drafted: %s", r.CommonName),
+			fmt.Sprintf("%s's certificate for %s is approaching expiry (%s) — a renewal ticket has been auto-drafted on their behalf.",
+				r.RequesterEmail, r.CommonName, c.ExpiresIn()))
+	}
+	return drafted, nil
+}
+
 // notify fans one ticket update out to every configured channel, exactly as
 // AlertService.notify does — a broken channel is logged and otherwise
 // ignored, never allowed to fail the ticket action itself.
 func (s *CertificateRequestService) notify(ctx context.Context, subject, body string) {
-	if s.email.Enabled() {
-		if err := s.email.Send(subject, body); err != nil {
+	email := s.settings.EmailNotifier()
+	teams := s.settings.TeamsNotifier()
+	if email.Enabled() {
+		if err := email.Send(subject, body); err != nil {
 			s.log.Warn("ticket: email send failed", "error", err)
 		}
 	}
-	if s.teams.Enabled() {
-		if err := s.teams.Send(ctx, subject, body, requestColor); err != nil {
+	if teams.Enabled() {
+		if err := teams.Send(ctx, subject, body, requestColor); err != nil {
 			s.log.Warn("ticket: teams send failed", "error", err)
 		}
 	}

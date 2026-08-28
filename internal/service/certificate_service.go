@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
@@ -35,30 +36,48 @@ type Alerter interface {
 type CertificateService struct {
 	repo         domain.CertificateRepository
 	rootCAs      domain.RootCARepository
-	sealer       *secret.Sealer
-	log          *slog.Logger
-	warningDays  int
-	criticalDays int
-	alerter      Alerter
+	rotationRepo domain.EncryptionRotationRepository
+	// sealer is swapped in place by RotateEncryptionKey, which is why it's
+	// an atomic pointer rather than a plain field — every other method
+	// reads it via currentSealer() so a rotation takes effect for the very
+	// next request, no restart needed.
+	sealer          atomic.Pointer[secret.Sealer]
+	settings        *SettingsService
+	log             *slog.Logger
+	warningPercent  int
+	criticalPercent int
+	alerter         Alerter
 }
 
-// CertificateOptions configures expiry thresholds used for health/summary
-// classification (the alerting service has its own, separately configured
-// thresholds — see AlertThresholds).
+// CertificateOptions configures the percent-of-lifetime-remaining expiry
+// thresholds used for health/summary classification (the day-based
+// WarningDays/CriticalDays counterparts are portal-editable — see
+// SettingsService and Thresholds below — while these percent thresholds
+// stay env-only; the alerting service has its own, separately configured
+// set — see AlertThresholds). See domain.Certificate.HealthStatus for how
+// the day and percent checks combine and why the percent check only ever
+// affects externally-issued certificates.
 type CertificateOptions struct {
-	WarningDays  int
-	CriticalDays int
+	WarningPercent  int
+	CriticalPercent int
 }
 
-// NewCertificateService builds the service.
-func NewCertificateService(repo domain.CertificateRepository, rootCAs domain.RootCARepository, sealer *secret.Sealer, log *slog.Logger, opts CertificateOptions) *CertificateService {
-	if opts.WarningDays <= 0 {
-		opts.WarningDays = 30
+// NewCertificateService builds the service. settings supplies the live,
+// portal-editable day-based expiry thresholds (see Thresholds); rotationRepo
+// is used only by RotateEncryptionKey.
+func NewCertificateService(repo domain.CertificateRepository, rootCAs domain.RootCARepository, rotationRepo domain.EncryptionRotationRepository, sealer *secret.Sealer, settings *SettingsService, log *slog.Logger, opts CertificateOptions) *CertificateService {
+	if opts.WarningPercent <= 0 {
+		opts.WarningPercent = 33
 	}
-	if opts.CriticalDays <= 0 {
-		opts.CriticalDays = 7
+	if opts.CriticalPercent <= 0 {
+		opts.CriticalPercent = 10
 	}
-	return &CertificateService{repo: repo, rootCAs: rootCAs, sealer: sealer, log: log, warningDays: opts.WarningDays, criticalDays: opts.CriticalDays}
+	s := &CertificateService{
+		repo: repo, rootCAs: rootCAs, rotationRepo: rotationRepo, settings: settings, log: log,
+		warningPercent: opts.WarningPercent, criticalPercent: opts.CriticalPercent,
+	}
+	s.sealer.Store(sealer)
+	return s
 }
 
 // SetAlerter wires an Alerter to be evaluated after every mutation and
@@ -66,13 +85,62 @@ func NewCertificateService(repo domain.CertificateRepository, rootCAs domain.Roo
 // just skips notification.
 func (s *CertificateService) SetAlerter(a Alerter) { s.alerter = a }
 
-// Thresholds exposes the configured expiry windows for display.
+// currentSealer returns the sealer actively used to encrypt/decrypt stored
+// private keys — always the live one, even immediately after a successful
+// RotateEncryptionKey call from a concurrent request.
+func (s *CertificateService) currentSealer() *secret.Sealer { return s.sealer.Load() }
+
+// Thresholds exposes the configured (live, portal-editable) expiry windows
+// for display.
 func (s *CertificateService) Thresholds() (warning, critical int) {
-	return s.warningDays, s.criticalDays
+	cur := s.settings.Current()
+	return cur.ExpiryWarningDays, cur.ExpiryCriticalDays
+}
+
+// PercentThresholds exposes the configured percent-of-lifetime-remaining
+// windows for display — the counterpart to Thresholds, kept as a separate
+// method rather than widening Thresholds's return so every existing call
+// site didn't need updating just to plumb these through. Unlike Thresholds,
+// these are still env-only/static — see CertificateOptions.
+func (s *CertificateService) PercentThresholds() (warning, critical int) {
+	return s.warningPercent, s.criticalPercent
 }
 
 // KeyEncryptionEnabled reports whether private keys are encrypted at rest.
-func (s *CertificateService) KeyEncryptionEnabled() bool { return s.sealer.Enabled() }
+func (s *CertificateService) KeyEncryptionEnabled() bool { return s.currentSealer().Enabled() }
+
+// RotateEncryptionKey changes the AES key that encrypts every stored
+// private key — certificates and root CAs alike — to newKeyBase64 (a
+// base64-encoded 32-byte key, or "" to turn encryption off and store keys
+// as plaintext PEM going forward, same convention as APP_ENCRYPTION_KEY
+// always had). Unlike every other portal setting, this is not a plain
+// value swap: every already-stored private key was encrypted under the
+// *old* key, so this decrypts each one with the sealer currently active and
+// re-encrypts it with the new one, atomically, via rotationRepo — either
+// every row (across both tables) and the new key setting all change
+// together, or nothing does. Only once that transaction commits does the
+// live sealer this service uses for every future request actually swap;
+// a validation failure or a mid-rotation error leaves the vault exactly as
+// it was, still readable under the old key.
+func (s *CertificateService) RotateEncryptionKey(ctx context.Context, newKeyBase64 string) (domain.RotationResult, error) {
+	newSealer, err := secret.NewSealer(newKeyBase64)
+	if err != nil {
+		return domain.RotationResult{}, domain.Invalid("encryption_key", err.Error())
+	}
+
+	oldSealer := s.currentSealer()
+	result, err := s.rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, newKeyBase64)
+	if err != nil {
+		return domain.RotationResult{}, fmt.Errorf("certificate service: rotate encryption key: %w", err)
+	}
+
+	s.sealer.Store(newSealer)
+	s.log.Info("encryption key rotated",
+		"certificates_reencrypted", result.CertificatesReencrypted,
+		"root_cas_reencrypted", result.RootCAsReencrypted,
+		"encryption_now_enabled", newSealer.Enabled())
+	return result, nil
+}
 
 // CreateCSRInput is the form payload for generating a new signing request.
 type CreateCSRInput struct {
@@ -128,7 +196,7 @@ func (s *CertificateService) CreateCSR(ctx context.Context, in CreateCSRInput) (
 	if err != nil {
 		return nil, err
 	}
-	stored, err := s.sealer.Seal(keyPEM)
+	stored, err := s.currentSealer().Seal(keyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +218,7 @@ func (s *CertificateService) CreateCSR(ctx context.Context, in CreateCSRInput) (
 		KeyCurve:            req.KeySpec.Curve,
 		CSRPEM:              csrPEM,
 		PrivateKeyPEM:       stored,
-		PrivateKeyEncrypted: s.sealer.Enabled(),
+		PrivateKeyEncrypted: s.currentSealer().Enabled(),
 		ExtKeyUsage:         ekus,
 		Status:              domain.CertPending,
 		Notes:               strings.TrimSpace(in.Notes),
@@ -227,12 +295,12 @@ func (s *CertificateService) Import(ctx context.Context, in ImportInput) (*domai
 		if !certutil.MatchesKey(certs[0], key) {
 			return nil, domain.Invalid("private_key_pem", "this key does not match the uploaded certificate")
 		}
-		sealed, err := s.sealer.Seal(keyPEM)
+		sealed, err := s.currentSealer().Seal(keyPEM)
 		if err != nil {
 			return nil, err
 		}
 		storedKeyPEM = sealed
-		record.PrivateKeyEncrypted = s.sealer.Enabled()
+		record.PrivateKeyEncrypted = s.currentSealer().Enabled()
 		alg, bits := certutil.DescribePublicKey(key.Public())
 		record.KeyAlgorithm = strings.ToLower(alg)
 		record.KeyBits = bits
@@ -293,7 +361,7 @@ func (s *CertificateService) ImportCSR(ctx context.Context, in ImportCSRInput) (
 		return nil, domain.Invalid("private_key_pem", "this key does not match the pasted signing request")
 	}
 
-	sealed, err := s.sealer.Seal(keyPEM)
+	sealed, err := s.currentSealer().Seal(keyPEM)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +394,7 @@ func (s *CertificateService) ImportCSR(ctx context.Context, in ImportCSRInput) (
 		KeyCurve:            spec.Curve,
 		CSRPEM:              csrPEM,
 		PrivateKeyPEM:       sealed,
-		PrivateKeyEncrypted: s.sealer.Enabled(),
+		PrivateKeyEncrypted: s.currentSealer().Enabled(),
 		ExtKeyUsage:         certutil.DescribeRequestedExtKeyUsage(csr),
 		Status:              domain.CertPending,
 		Notes:               strings.TrimSpace(in.Notes),
@@ -379,12 +447,12 @@ func (s *CertificateService) ImportPFX(ctx context.Context, in ImportPFXInput) (
 		if err != nil {
 			return nil, err
 		}
-		sealed, err := s.sealer.Seal(keyPEM)
+		sealed, err := s.currentSealer().Seal(keyPEM)
 		if err != nil {
 			return nil, err
 		}
 		record.PrivateKeyPEM = sealed
-		record.PrivateKeyEncrypted = s.sealer.Enabled()
+		record.PrivateKeyEncrypted = s.currentSealer().Enabled()
 		alg, bits := certutil.DescribePublicKey(key.Public())
 		record.KeyAlgorithm = strings.ToLower(alg)
 		record.KeyBits = bits
@@ -494,13 +562,14 @@ func (s *CertificateService) Summary(ctx context.Context) (domain.Summary, error
 		return domain.Summary{}, err
 	}
 	var sum domain.Summary
+	cur := s.settings.Current()
 	for _, c := range certs {
 		sum.Total++
 		if c.Status != domain.CertIssued {
 			sum.Pending++
 			continue
 		}
-		switch c.HealthStatus(s.warningDays, s.criticalDays) {
+		switch c.HealthStatus(cur.ExpiryWarningDays, cur.ExpiryCriticalDays, s.warningPercent, s.criticalPercent) {
 		case domain.StatusExpiring:
 			sum.Expiring++
 		case domain.StatusCritical:
@@ -550,7 +619,7 @@ func (s *CertificateService) UploadRootCA(ctx context.Context, name, certPEM, ke
 		return nil, domain.Invalid("private_key", "this private key does not match the certificate")
 	}
 
-	stored, err := s.sealer.Seal(strings.TrimSpace(keyPEM))
+	stored, err := s.currentSealer().Seal(strings.TrimSpace(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("certificate service: seal root ca key: %w", err)
 	}
@@ -561,7 +630,7 @@ func (s *CertificateService) UploadRootCA(ctx context.Context, name, certPEM, ke
 		Name:                name,
 		CertificatePEM:      certutil.EncodeCertificatePEM(cert),
 		PrivateKeyPEM:       stored,
-		PrivateKeyEncrypted: s.sealer.Enabled(),
+		PrivateKeyEncrypted: s.currentSealer().Enabled(),
 		Subject:             cert.Subject.String(),
 		SignatureAlgorithm:  cert.SignatureAlgorithm.String(),
 		PublicKeyAlgorithm:  pkAlg,
@@ -596,7 +665,7 @@ func (s *CertificateService) rootCAKey(ca *domain.RootCA) (crypto.Signer, error)
 	if !ca.HasPrivateKey() {
 		return nil, errors.New("certificate service: no private key on file for this root CA")
 	}
-	pemStr, err := s.sealer.Open(ca.PrivateKeyPEM, ca.PrivateKeyEncrypted)
+	pemStr, err := s.currentSealer().Open(ca.PrivateKeyPEM, ca.PrivateKeyEncrypted)
 	if err != nil {
 		return nil, fmt.Errorf("certificate service: root ca private key unavailable: %w", err)
 	}
@@ -642,6 +711,113 @@ func (s *CertificateService) SignWithRootCA(ctx context.Context, id, rootCAID uu
 		return nil, err
 	}
 	s.evaluate(ctx, record)
+	return record, nil
+}
+
+// BulkRenewInput selects which existing certificates to renew, against
+// which Root CA, and for how long — one Root CA and validity period for the
+// whole batch, chosen once rather than per certificate.
+type BulkRenewInput struct {
+	CertificateIDs []uuid.UUID
+	RootCAID       uuid.UUID
+	Days           int
+}
+
+// BulkRenewOutcome reports what happened to one certificate in a
+// BulkRenewInternal batch — exactly one of NewCertificate or Err is set.
+type BulkRenewOutcome struct {
+	CertificateID uuid.UUID
+	// CommonName is filled in on a best-effort basis (even on failure, once
+	// the original record has been loaded) so a report can name the
+	// certificate a failure applies to, not just its ID.
+	CommonName     string
+	NewCertificate *domain.Certificate
+	Err            error
+}
+
+// BulkRenewInternal renews several already-issued *internal* certificates at
+// once, against one Root CA and validity period chosen for the whole batch.
+// Deliberately scoped to internal certificates only: external renewal has no
+// CA to call from here (see the DigiCert integration), and even once that
+// exists it's a per-ticket, admin-clicked action, not a bulk one — placing a
+// batch of orders with a paid public CA isn't a decision this method should
+// make silently.
+//
+// Each certificate renews independently through the same two-step
+// CreateCSR + SignWithRootCA pair ApproveInternal already uses for a ticket,
+// seeded from the existing record's own subject/SAN/key fields instead of
+// ticket input — producing a brand-new certificate record per input, never
+// mutating the original, exactly as a renewal ticket already does (the old
+// record stays on file as history). One certificate failing (wrong trust
+// class, incomplete subject data, a CA problem) never aborts the rest of the
+// batch — every outcome, success or failure, comes back in the returned
+// slice for the caller to report.
+func (s *CertificateService) BulkRenewInternal(ctx context.Context, in BulkRenewInput) []BulkRenewOutcome {
+	outcomes := make([]BulkRenewOutcome, 0, len(in.CertificateIDs))
+	for _, id := range in.CertificateIDs {
+		outcome := BulkRenewOutcome{CertificateID: id}
+
+		record, err := s.repo.GetByID(ctx, id)
+		if err != nil {
+			outcome.Err = err
+			outcomes = append(outcomes, outcome)
+			continue
+		}
+		outcome.CommonName = record.CommonName
+
+		if record.TrustClass() != domain.TrustInternal {
+			outcome.Err = domain.Invalid("trust_class", "only internal certificates can be bulk-renewed")
+			outcomes = append(outcomes, outcome)
+			continue
+		}
+
+		sans := strings.Join(append(append([]string{}, record.DNSNames...), record.IPAddresses...), "\n")
+		fresh, err := s.CreateCSR(ctx, CreateCSRInput{
+			CommonName:         record.CommonName,
+			Organization:       record.Organization,
+			OrganizationalUnit: record.OrganizationalUnit,
+			Country:            record.Country,
+			Province:           record.Province,
+			Locality:           record.Locality,
+			Email:              record.Email,
+			SANs:               sans,
+			KeyAlgorithm:       record.KeyAlgorithm,
+			KeyBits:            record.KeyBits,
+			KeyCurve:           record.KeyCurve,
+			Owner:              record.Owner,
+			Notes:              fmt.Sprintf("Bulk renewal of certificate %s", record.ID),
+			ExtKeyUsages:       record.ExtKeyUsage,
+		})
+		if err != nil {
+			outcome.Err = fmt.Errorf("generate renewal CSR: %w", err)
+			outcomes = append(outcomes, outcome)
+			continue
+		}
+
+		signed, err := s.SignWithRootCA(ctx, fresh.ID, in.RootCAID, in.Days)
+		if err != nil {
+			outcome.Err = fmt.Errorf("sign renewal: %w", err)
+			outcomes = append(outcomes, outcome)
+			continue
+		}
+		outcome.NewCertificate = signed
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes
+}
+
+// SetDigiCertOrderID records that a certificate was ordered through the
+// DigiCert integration (Phase 6) — see domain.Certificate.DigiCertOrderID
+// and DigiCertService.CheckStatus, the only caller.
+func (s *CertificateService) SetDigiCertOrderID(ctx context.Context, id uuid.UUID, orderID string) (*domain.Certificate, error) {
+	record, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	record.DigiCertOrderID = strings.TrimSpace(orderID)
+	if err := s.repo.Update(ctx, record); err != nil {
+		return nil, err
+	}
 	return record, nil
 }
 
@@ -890,7 +1066,7 @@ func (s *CertificateService) PrivateKey(record *domain.Certificate) (string, err
 	if !record.HasPrivateKey() {
 		return "", errors.New("certificate service: no private key on file for this certificate")
 	}
-	pemStr, err := s.sealer.Open(record.PrivateKeyPEM, record.PrivateKeyEncrypted)
+	pemStr, err := s.currentSealer().Open(record.PrivateKeyPEM, record.PrivateKeyEncrypted)
 	if err != nil {
 		return "", fmt.Errorf("certificate service: private key unavailable: %w", err)
 	}

@@ -102,13 +102,36 @@ func (f *fakeRootCARepo) List(_ context.Context) ([]*domain.RootCA, error) {
 	return out, nil
 }
 
+// fakeEncryptionRotationRepository is a stand-in for
+// domain.EncryptionRotationRepository. Most tests in this file never touch
+// RotateEncryptionKey, so it just counts calls and returns whatever result/
+// err it's configured with — see certificate_service_rotation_test.go for
+// one that actually exercises the rotation path against fakeCertificateRepo/
+// fakeRootCARepo directly.
+type fakeEncryptionRotationRepository struct {
+	result domain.RotationResult
+	err    error
+	calls  int
+}
+
+func (f *fakeEncryptionRotationRepository) RotateEncryptionKey(_ context.Context, _, _ *secret.Sealer, _ string) (domain.RotationResult, error) {
+	f.calls++
+	return f.result, f.err
+}
+
 func newTestCertificateService(t *testing.T) *CertificateService {
 	t.Helper()
 	sealer, err := secret.NewSealer("")
 	if err != nil {
 		t.Fatalf("NewSealer: %v", err)
 	}
-	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), sealer, discardLogger(), CertificateOptions{})
+	// 30/7/1-day thresholds mirror .env.example's documented defaults —
+	// tests written before thresholds moved to the portal (v1.5) assume
+	// these same values, so newTestSettingsService is seeded with them here
+	// rather than zero, which would make every certificate look perpetually
+	// healthy regardless of how close to expiry it actually is.
+	settings := newTestSettingsService(domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1})
+	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), &fakeEncryptionRotationRepository{}, sealer, settings, discardLogger(), CertificateOptions{})
 }
 
 func TestImportCSRStoresSubjectSANsAndRequestedEKU(t *testing.T) {
@@ -426,6 +449,116 @@ func TestSignWithRootCAMarksCertificateInternal(t *testing.T) {
 	}
 	if signed.ChainPEM != ca.CertificatePEM {
 		t.Error("expected the CA's own certificate to become the issued certificate's chain")
+	}
+}
+
+func TestBulkRenewInternalMixedBatch(t *testing.T) {
+	svc := newTestCertificateService(t)
+	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
+	ca, err := svc.UploadRootCA(context.Background(), "Acme Internal CA", caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("UploadRootCA: %v", err)
+	}
+
+	// A valid internal, issued certificate — should renew cleanly into a
+	// brand-new record, leaving the original alone.
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "renew-me.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	issued, err := svc.SignWithRootCA(context.Background(), pending.ID, ca.ID, 30)
+	if err != nil {
+		t.Fatalf("SignWithRootCA: %v", err)
+	}
+
+	// An externally-issued certificate: not self-signed (Subject != Issuer)
+	// and not linked to an uploaded Root CA record, since Import doesn't set
+	// SignedByRootCAID — exactly what "pasted in from an outside CA" looks
+	// like. Out of scope for bulk renewal; must be reported as a failure
+	// rather than aborting the whole batch.
+	caCert, err := certutil.ParseCertificatesPEM(caCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatesPEM: %v", err)
+	}
+	caKey, err := certutil.ParsePrivateKeyPEM(caKeyPEM)
+	if err != nil {
+		t.Fatalf("ParsePrivateKeyPEM: %v", err)
+	}
+	extCSRPEM, _, err := certutil.CreateCSR(certutil.CSRRequest{
+		Subject: certutil.Subject{CommonName: "external.example.com"},
+		KeySpec: certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048},
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR (external leaf): %v", err)
+	}
+	extCSR, err := certutil.ParseCSRPEM(extCSRPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM: %v", err)
+	}
+	_, extLeafPEM, err := certutil.SignWithCA(extCSR, caCert[0], caKey, 30, nil)
+	if err != nil {
+		t.Fatalf("SignWithCA (external leaf): %v", err)
+	}
+	external, err := svc.Import(context.Background(), ImportInput{CertificatePEM: extLeafPEM})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if external.TrustClass() != domain.TrustExternal {
+		t.Fatalf("test setup: expected TrustExternal, got %q", external.TrustClass())
+	}
+
+	missingID := uuid.New()
+
+	outcomes := svc.BulkRenewInternal(context.Background(), BulkRenewInput{
+		CertificateIDs: []uuid.UUID{issued.ID, external.ID, missingID},
+		RootCAID:       ca.ID,
+		Days:           30,
+	})
+	if len(outcomes) != 3 {
+		t.Fatalf("expected 3 outcomes, got %d", len(outcomes))
+	}
+
+	renewed := outcomes[0]
+	if renewed.CertificateID != issued.ID {
+		t.Fatalf("outcomes[0].CertificateID = %v, want %v", renewed.CertificateID, issued.ID)
+	}
+	if renewed.Err != nil {
+		t.Fatalf("expected the internal certificate to renew, got error: %v", renewed.Err)
+	}
+	if renewed.NewCertificate == nil {
+		t.Fatal("expected a new certificate record for the successful renewal")
+	}
+	if renewed.NewCertificate.ID == issued.ID {
+		t.Fatal("renewal must produce a fresh record, not mutate the original in place")
+	}
+	if got := renewed.NewCertificate.TrustClass(); got != domain.TrustInternal {
+		t.Fatalf("renewed certificate TrustClass() = %q, want internal", got)
+	}
+
+	rejected := outcomes[1]
+	if rejected.Err == nil {
+		t.Fatal("expected renewing an external certificate to fail — bulk renewal is internal-only")
+	}
+	if rejected.NewCertificate != nil {
+		t.Fatal("a rejected renewal must not produce a new certificate")
+	}
+
+	missing := outcomes[2]
+	if missing.Err == nil {
+		t.Fatal("expected a nonexistent certificate ID to fail")
+	}
+
+	// The original internal certificate must be untouched — still present,
+	// still carrying its own certificate material — since renewal always
+	// creates a fresh record rather than mutating history.
+	original, err := svc.Get(context.Background(), issued.ID)
+	if err != nil {
+		t.Fatalf("Get (original): %v", err)
+	}
+	if original.CertificatePEM != issued.CertificatePEM {
+		t.Error("the original certificate record must be left untouched by bulk renewal")
 	}
 }
 

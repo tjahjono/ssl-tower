@@ -1,0 +1,136 @@
+{{define "content"}}
+<div class="mx-auto max-w-3xl space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-semibold text-ink">Settings</h1>
+    <p class="mt-1 text-sm text-ink-5">
+      These used to be environment variables, fixed until a restart — now they're saved here and take
+      effect immediately, no redeploy needed. Admin-only.
+    </p>
+  </div>
+
+  {{if .Success}}
+    <div class="rounded-xl bg-emerald-500/10 px-4 py-3 text-sm text-hue-emerald-strong ring-1 ring-inset ring-emerald-500/25">{{.Success}}</div>
+  {{end}}
+  {{if .Error}}
+    <div class="rounded-xl bg-rose-500/10 px-4 py-3 text-sm text-hue-rose-strong ring-1 ring-inset ring-rose-500/25">{{.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/settings" class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">Expiry alert thresholds</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          A certificate becomes "expiring", then "critical", then a last-notice alert this many days
+          before it expires. These also gate email/Teams alerts below.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label for="expiry_warning_days" class="field-label mb-1 block">Warning (days)</label>
+          <input id="expiry_warning_days" name="expiry_warning_days" type="number" min="0" required
+                 value="{{.Settings.ExpiryWarningDays}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="expiry_critical_days" class="field-label mb-1 block">Critical (days)</label>
+          <input id="expiry_critical_days" name="expiry_critical_days" type="number" min="0" required
+                 value="{{.Settings.ExpiryCriticalDays}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="expiry_final_days" class="field-label mb-1 block">Final notice (days)</label>
+          <input id="expiry_final_days" name="expiry_final_days" type="number" min="0" required
+                 value="{{.Settings.ExpiryFinalDays}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+      </div>
+      <p class="text-xs text-ink-6">
+        Must be ordered final &le; critical &le; warning. The percent-of-lifetime-remaining thresholds
+        for external certificates stay environment-only — see CLAUDE.md.
+      </p>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">Email alerts (SMTP)</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          Leave the host empty to disable the email channel entirely. The host and "from" address also
+          double as the transport a ticket's "send by email" button uses.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label for="smtp_host" class="field-label mb-1 block">SMTP host</label>
+          <input id="smtp_host" name="smtp_host" type="text" placeholder="smtp.example.com"
+                 value="{{.Settings.SMTPHost}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="smtp_port" class="field-label mb-1 block">SMTP port</label>
+          <input id="smtp_port" name="smtp_port" type="number" min="0" required
+                 value="{{.Settings.SMTPPort}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="smtp_username" class="field-label mb-1 block">SMTP username</label>
+          <input id="smtp_username" name="smtp_username" type="text" autocomplete="off"
+                 value="{{.Settings.SMTPUsername}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="smtp_password" class="field-label mb-1 block">SMTP password</label>
+          <input id="smtp_password" name="smtp_password" type="password" autocomplete="new-password"
+                 placeholder="{{if hasValue .Settings.SMTPPassword}}•••• leave blank to keep current{{else}}not set{{end}}"
+                 class="field-input w-full px-3 py-2 text-sm">
+          <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
+            <input type="checkbox" name="smtp_password_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+            Clear the stored password
+          </label>
+        </div>
+        <div class="sm:col-span-2">
+          <label for="alert_email_from" class="field-label mb-1 block">Alert "from" address</label>
+          <input id="alert_email_from" name="alert_email_from" type="email"
+                 value="{{.Settings.AlertEmailFrom}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div class="sm:col-span-2">
+          <label for="alert_email_to" class="field-label mb-1 block">Alert recipients (comma-separated)</label>
+          <input id="alert_email_to" name="alert_email_to" type="text" placeholder="team@example.com, oncall@example.com"
+                 value="{{.AlertEmailToText}}" class="field-input w-full px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-ink-6">Only used for expiry alerts — not by a ticket's "send by email" button, which emails whoever the admin/editor typed in.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">Microsoft Teams alerts</h2>
+        <p class="mt-0.5 text-xs text-ink-5">Leave empty to disable the Teams channel entirely.</p>
+      </div>
+      <div>
+        <label for="teams_webhook_url" class="field-label mb-1 block">Incoming webhook URL</label>
+        <input id="teams_webhook_url" name="teams_webhook_url" type="url" autocomplete="off"
+               placeholder="{{if hasValue .Settings.TeamsWebhookURL}}•••• leave blank to keep current{{else}}not set{{end}}"
+               class="field-input w-full px-3 py-2 text-sm">
+        <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
+          <input type="checkbox" name="teams_webhook_url_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+          Clear the stored webhook URL
+        </label>
+      </div>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">Certificate request tickets</h2>
+        <p class="mt-0.5 text-xs text-ink-5">How many days after approval an open ticket is flagged overdue on the ticket queue.</p>
+      </div>
+      <div class="max-w-xs">
+        <label for="ticket_sla_days" class="field-label mb-1 block">Ticket SLA (days)</label>
+        <input id="ticket_sla_days" name="ticket_sla_days" type="number" min="1" required
+               value="{{.Settings.TicketSLADays}}" class="field-input w-full px-3 py-2 text-sm">
+      </div>
+    </section>
+
+    <button type="submit" class="btn-primary px-4 py-2 text-sm">Save settings</button>
+  </form>
+
+  {{template "settings-encryption-section" .}}
+
+</div>
+{{end}}

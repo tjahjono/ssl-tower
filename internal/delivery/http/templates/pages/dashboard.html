@@ -5,7 +5,7 @@
     <div>
       <h1 class="text-2xl font-semibold text-ink">Certificate dashboard</h1>
       <p class="mt-1 text-sm text-ink-5">
-        Warning at {{.WarningDays}} days, critical at {{.CriticalDays}}. Expiry alerts are re-checked every {{.SweepInterval}}. Last swept {{since .LastSweep}}.
+        Warning at {{.WarningDays}} days, critical at {{.CriticalDays}} — or, for external certificates, {{.WarningPercent}}%/{{.CriticalPercent}}% of total lifetime remaining, whichever comes first. Expiry alerts are re-checked every {{.SweepInterval}}. Last swept {{since .LastSweep}}.
       </p>
     </div>
   </div>
@@ -27,13 +27,13 @@
     </div>
 
     <div data-tab-panel="internal" class="mt-4 space-y-8">
-      {{template "dashboard-scope" dict "Scope" .Internal "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" true "Empty" "No internal certificates yet."}}
+      {{template "dashboard-scope" dict "Scope" .Internal "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "WarningPercent" .WarningPercent "CriticalPercent" .CriticalPercent "ShowDetail" true "Empty" "No internal certificates yet."}}
     </div>
     <div data-tab-panel="external" class="mt-4 hidden space-y-8">
-      {{template "dashboard-scope" dict "Scope" .External "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" true "Empty" "No external certificates yet."}}
+      {{template "dashboard-scope" dict "Scope" .External "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "WarningPercent" .WarningPercent "CriticalPercent" .CriticalPercent "ShowDetail" true "Empty" "No external certificates yet."}}
     </div>
     <div data-tab-panel="pending" class="mt-4 hidden space-y-8">
-      {{template "dashboard-scope" dict "Scope" .Pending "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "ShowDetail" false "Empty" "Nothing awaiting a certificate."}}
+      {{template "dashboard-scope" dict "Scope" .Pending "User" .User "WarningDays" .WarningDays "CriticalDays" .CriticalDays "WarningPercent" .WarningPercent "CriticalPercent" .CriticalPercent "ShowDetail" false "Empty" "Nothing awaiting a certificate."}}
     </div>
   </div>
 </div>
@@ -42,9 +42,11 @@
 {{/* Renders one trust-class scope's full slice of the dashboard: summary
      tiles, "needs attention", the certificate table, and the CA breakdown.
      Takes "Scope" (a dashboardScope), "User", "WarningDays", "CriticalDays",
-     "ShowDetail" (false hides tiles/attention/CA-breakdown — used for the
-     Pending tab, where certificates have no health status or issuer yet),
-     and "Empty" (the certificate table's no-rows message). */}}
+     "WarningPercent", "CriticalPercent" (the percent-of-lifetime-remaining
+     thresholds, external certificates only — see HealthStatus's doc
+     comment), "ShowDetail" (false hides tiles/attention/CA-breakdown — used
+     for the Pending tab, where certificates have no health status or issuer
+     yet), and "Empty" (the certificate table's no-rows message). */}}
 {{define "dashboard-scope"}}
 {{if .ShowDetail}}
 <section class="space-y-3">
@@ -84,7 +86,7 @@
               {{if .Owner}}<p class="text-xs text-ink-5">{{.Owner}}</p>{{end}}
             </td>
             <td class="px-4 py-3">
-              {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays}}
+              {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays $root.WarningPercent $root.CriticalPercent}}
               <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
                 <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
               </span>
@@ -118,7 +120,7 @@
       {{if .User}}, or open the <a href="/certificates" class="text-hue-sky hover:text-hue-sky-strong">vault</a> to manage them{{end}}.
     </p>
   </div>
-  {{template "dashboard-cert-table" dict "Certs" .Scope.Certificates "WarningDays" .WarningDays "CriticalDays" .CriticalDays "User" .User "Empty" .Empty}}
+  {{template "dashboard-cert-table" dict "Certs" .Scope.Certificates "WarningDays" .WarningDays "CriticalDays" .CriticalDays "WarningPercent" .WarningPercent "CriticalPercent" .CriticalPercent "User" .User "Empty" .Empty}}
 </section>
 
 {{if .ShowDetail}}
@@ -157,8 +159,9 @@
 {{end}}
 
 {{/* Shared by each Internal/External/Pending tab panel above — takes
-     "Certs", "WarningDays", "CriticalDays", "User", "Empty" (the no-rows
-     message, tailored per tab). */}}
+     "Certs", "WarningDays", "CriticalDays", "WarningPercent",
+     "CriticalPercent", "User", "Empty" (the no-rows message, tailored per
+     tab). */}}
 {{define "dashboard-cert-table"}}
 <div class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
   <div class="overflow-x-auto">
@@ -203,7 +206,7 @@
           </td>
           <td class="px-4 py-3">
             {{if eq .Status "issued"}}
-            {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays}}
+            {{$hs := .HealthStatus $root.WarningDays $root.CriticalDays $root.WarningPercent $root.CriticalPercent}}
             <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset {{badgeClass $hs}}">
               <span class="h-1.5 w-1.5 rounded-full {{dotClass $hs}}"></span>{{statusLabel $hs}}
             </span>

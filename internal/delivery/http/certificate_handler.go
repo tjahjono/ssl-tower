@@ -35,6 +35,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	warning, critical := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
 
 	// Internal, External, Pending partition every certificate exactly once
 	// (Pending is anything not yet issued) — the same tri-state split the
@@ -55,11 +56,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := newView(r, "Dashboard", "dashboard")
-	view["Internal"] = newDashboardScope(internalCerts, warning, critical)
-	view["External"] = newDashboardScope(externalCerts, warning, critical)
-	view["Pending"] = newDashboardScope(pendingCerts, warning, critical)
+	view["Internal"] = newDashboardScope(internalCerts, warning, critical, warningPct, criticalPct)
+	view["External"] = newDashboardScope(externalCerts, warning, critical, warningPct, criticalPct)
+	view["Pending"] = newDashboardScope(pendingCerts, warning, critical, warningPct, criticalPct)
 	view["WarningDays"] = warning
 	view["CriticalDays"] = critical
+	view["WarningPercent"] = warningPct
+	view["CriticalPercent"] = criticalPct
 	view["LastSweep"] = s.sweeper.LastRun()
 	view["SweepInterval"] = humanDuration(s.sweeper.Interval())
 	s.render.Page(w, http.StatusOK, "dashboard", view)
@@ -75,7 +78,7 @@ type dashboardScope struct {
 	Groups       []service.IssuerGroup
 }
 
-func newDashboardScope(certs []*domain.Certificate, warning, critical int) dashboardScope {
+func newDashboardScope(certs []*domain.Certificate, warning, critical, warningPct, criticalPct int) dashboardScope {
 	scope := dashboardScope{Certificates: certs, Groups: service.GroupByIssuer(certs)}
 	for _, c := range certs {
 		scope.Summary.Total++
@@ -83,7 +86,7 @@ func newDashboardScope(certs []*domain.Certificate, warning, critical int) dashb
 			scope.Summary.Pending++
 			continue
 		}
-		switch c.HealthStatus(warning, critical) {
+		switch c.HealthStatus(warning, critical, warningPct, criticalPct) {
 		case domain.StatusExpiring:
 			scope.Summary.Expiring++
 			scope.Attention = append(scope.Attention, c)
@@ -122,6 +125,7 @@ func (s *Server) handleCertificatesPage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	warning, critical := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
 
 	view := newView(r, "Certificates", "certificates")
 	view["Certificates"] = certs
@@ -130,8 +134,13 @@ func (s *Server) handleCertificatesPage(w http.ResponseWriter, r *http.Request) 
 	view["Encrypted"] = s.certs.KeyEncryptionEnabled()
 	view["WarningDays"] = warning
 	view["CriticalDays"] = critical
+	view["WarningPercent"] = warningPct
+	view["CriticalPercent"] = criticalPct
 	view["CanDownload"] = s.currentUser(r).Role.CanManageUsers()
 	view["EKUOptions"] = certutil.ExtKeyUsageOptions()
+	if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
+		view["RootCAs"] = rootCAs
+	}
 	s.render.Page(w, http.StatusOK, "certificates", view)
 }
 
@@ -144,11 +153,17 @@ func (s *Server) handleCertificateList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	warning, critical := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
 	view := newView(r, "", "")
 	view["Certificates"] = certs
 	view["Filter"] = filter
 	view["WarningDays"] = warning
 	view["CriticalDays"] = critical
+	view["WarningPercent"] = warningPct
+	view["CriticalPercent"] = criticalPct
+	if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
+		view["RootCAs"] = rootCAs
+	}
 	s.render.Partial(w, http.StatusOK, "certificate-table", view)
 }
 
@@ -566,6 +581,67 @@ func (s *Server) handleCertificateSignWithRootCA(w http.ResponseWriter, r *http.
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 
+// handleCertificateBulkRenew renews a batch of selected internal certificates
+// against one chosen Root CA, producing a fresh certificate record per
+// selection (mirroring how a renewal ticket already works) rather than
+// mutating the originals in place. One bad record doesn't abort the rest of
+// the batch — failures are tallied and reported alongside the successes.
+func (s *Server) handleCertificateBulkRenew(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	rawIDs := r.PostForm["certificate_ids"]
+	if len(rawIDs) == 0 {
+		s.certificateTableResponse(w, r, &flashMessage{Kind: "error", Message: "select at least one certificate to renew"})
+		return
+	}
+	rootCAID, err := uuid.Parse(r.PostFormValue("root_ca_id"))
+	if err != nil {
+		s.certificateTableResponse(w, r, &flashMessage{Kind: "error", Message: "choose a Root CA to sign with"})
+		return
+	}
+	days, _ := strconv.Atoi(r.PostFormValue("days"))
+	if days <= 0 {
+		days = 365
+	}
+	ids := make([]uuid.UUID, 0, len(rawIDs))
+	for _, raw := range rawIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+
+	outcomes := s.certs.BulkRenewInternal(r.Context(), service.BulkRenewInput{
+		CertificateIDs: ids,
+		RootCAID:       rootCAID,
+		Days:           days,
+	})
+	succeeded, failed := 0, 0
+	for _, o := range outcomes {
+		if o.Err != nil {
+			failed++
+			continue
+		}
+		succeeded++
+		s.recordAudit(r, domain.AuditCertificateRenewed, "certificate", o.NewCertificate.ID.String(),
+			fmt.Sprintf("renewed from %s (%s), %d days", o.CertificateID, o.CommonName, days))
+	}
+
+	var flash *flashMessage
+	switch {
+	case failed == 0:
+		flash = &flashMessage{Kind: "success", Message: fmt.Sprintf("Renewed %d certificate(s).", succeeded)}
+	case succeeded == 0:
+		flash = &flashMessage{Kind: "error", Message: fmt.Sprintf("Renewal failed for all %d certificate(s).", failed)}
+	default:
+		flash = &flashMessage{Kind: "warning", Message: fmt.Sprintf("Renewed %d certificate(s); %d failed.", succeeded, failed)}
+	}
+	s.certificateTableResponse(w, r, flash)
+}
+
 // handleCertificateDelete removes a certificate and its key material.
 func (s *Server) handleCertificateDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
@@ -659,8 +735,9 @@ func (s *Server) decorateCertificateView(r *http.Request, view map[string]any, r
 	view["CanDownload"] = s.currentUser(r).Role.CanManageUsers()
 	view["CanExportCSR"] = s.currentUser(r).Role.CanWrite()
 	warning, critical := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
 	view["Health"] = record.HealthFindings()
-	view["HealthStatus"] = record.HealthStatus(warning, critical)
+	view["HealthStatus"] = record.HealthStatus(warning, critical, warningPct, criticalPct)
 	if shared, err := s.certs.SharedFingerprint(r.Context(), record); err == nil {
 		view["SharedWith"] = shared
 	}
@@ -693,11 +770,17 @@ func (s *Server) certificateTableResponse(w http.ResponseWriter, r *http.Request
 		return
 	}
 	warning, critical := s.certs.Thresholds()
+	warningPct, criticalPct := s.certs.PercentThresholds()
 	view := newView(r, "", "")
 	view["Certificates"] = certs
 	view["Filter"] = filter
 	view["WarningDays"] = warning
 	view["CriticalDays"] = critical
+	view["WarningPercent"] = warningPct
+	view["CriticalPercent"] = criticalPct
+	if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
+		view["RootCAs"] = rootCAs
+	}
 	view["Flash"] = flash
 	s.render.Partial(w, http.StatusOK, "certificate-table-response", view)
 }
@@ -728,6 +811,22 @@ func certificateFormats(record *domain.Certificate) []downloadFormat {
 	}
 	if len(formats) > 0 {
 		formats = append(formats, downloadFormat{Value: certutil.FormatZIP, Label: "Everything (.zip)", Hint: "whatever is on file, every format"})
+	}
+	return formats
+}
+
+// certificateSendFormats is certificateFormats narrowed to formats that
+// never bundle a private key — the "send by email" form's dropdown. Key
+// inclusion there is its own explicit, admin-only checkbox (see
+// handleTicketSendEmail), so the base format choice is deliberately kept to
+// the certificate-only encodings; anyone wanting a key-bearing bundle (PFX
+// with key, or the full .zip) can still use the adjacent Download panel.
+func certificateSendFormats(record *domain.Certificate) []downloadFormat {
+	var formats []downloadFormat
+	for _, f := range certificateFormats(record) {
+		if !formatIncludesPrivateKey(f.Value) {
+			formats = append(formats, f)
+		}
 	}
 	return formats
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
-	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
 )
 
 func discardLogger() *slog.Logger {
@@ -40,11 +39,24 @@ func (f *fakeAlertRepo) SetAlertLevel(_ context.Context, id uuid.UUID, level int
 	return nil
 }
 
-// newTestAlertService builds an AlertService with both notification channels
-// disabled (empty config), so tests exercise the dedupe/threshold logic
-// without attempting any real network I/O.
-func newTestAlertService(repo AlertRepository, thresholds AlertThresholds) *AlertService {
-	return NewAlertService(repo, notify.NewEmailNotifier(notify.EmailConfig{}), notify.NewTeamsNotifier(""), discardLogger(), thresholds)
+// newTestSettingsService builds a SettingsService with its live snapshot
+// pre-loaded directly (bypassing Bootstrap/Reload's repo round-trip, which
+// tests in this package don't need) — settings.current is unexported but
+// this file lives in the same package, so it can be set directly. Every
+// notifier it builds is empty configuration (Enabled() == false), so tests
+// exercise the dedupe/threshold logic without attempting any real network
+// I/O.
+func newTestSettingsService(s domain.AppSettings) *SettingsService {
+	svc := NewSettingsService(nil, discardLogger())
+	svc.current.Store(&s)
+	return svc
+}
+
+// newTestAlertService builds an AlertService whose day-based thresholds come
+// from settings (portal-editable as of v1.5) and whose percent-based
+// thresholds come from thresholds (still static/env-only).
+func newTestAlertService(repo AlertRepository, settings domain.AppSettings, thresholds AlertThresholds) *AlertService {
+	return NewAlertService(repo, newTestSettingsService(settings), discardLogger(), thresholds)
 }
 
 func certAfterDays(d int) *domain.Certificate {
@@ -53,7 +65,9 @@ func certAfterDays(d int) *domain.Certificate {
 }
 
 func TestAlertLevelForThresholds(t *testing.T) {
-	svc := newTestAlertService(newFakeAlertRepo(), AlertThresholds{WarningDays: 30, CriticalDays: 7, FinalDays: 1})
+	svc := newTestAlertService(newFakeAlertRepo(),
+		domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1},
+		AlertThresholds{})
 
 	cases := []struct {
 		name string
@@ -78,7 +92,9 @@ func TestAlertLevelForThresholds(t *testing.T) {
 
 func TestEvaluateFiresOncePerStateChange(t *testing.T) {
 	repo := newFakeAlertRepo()
-	svc := newTestAlertService(repo, AlertThresholds{WarningDays: 30, CriticalDays: 7, FinalDays: 1})
+	svc := newTestAlertService(repo,
+		domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1},
+		AlertThresholds{})
 	id := uuid.New()
 	cert := func(days int) *domain.Certificate {
 		na := time.Now().Add(time.Duration(days)*24*time.Hour + time.Hour)
@@ -121,7 +137,7 @@ func TestEvaluateFiresOncePerStateChange(t *testing.T) {
 
 func TestEvaluateIgnoresNilAndPendingInputs(t *testing.T) {
 	repo := newFakeAlertRepo()
-	svc := newTestAlertService(repo, AlertThresholds{})
+	svc := newTestAlertService(repo, domain.AppSettings{}, AlertThresholds{})
 	svc.Evaluate(context.Background(), nil)
 	var nilSvc *AlertService
 	nilSvc.Evaluate(context.Background(), &domain.Certificate{})

@@ -39,8 +39,12 @@
 #
 #      (`make docker-secrets` does this for you, from one generated
 #      password, so the two never drift apart.) SMTP_PASSWORD and
-#      TEAMS_WEBHOOK_URL are optional — only create + uncomment them below if
-#      you're enabling that alert channel.
+#      TEAMS_WEBHOOK_URL are optional — `make docker-secrets` only creates
+#      those two secrets when it finds a non-empty value for them in .env.
+#      The env entries and secrets: references below are uncommented on the
+#      assumption you have both set; if your .env is missing one (or both),
+#      re-comment the matching lines below before deploying, or
+#      `docker stack deploy` will fail on a secret that was never created.
 #
 #   4. Deploy:
 #        docker stack deploy -c docker-stack.yml ssltower
@@ -99,16 +103,25 @@ services:
       APP_ENCRYPTION_KEY_FILE: /run/secrets/ssl_tower_encryption_key
       SESSION_SECRET_FILE: /run/secrets/ssl_tower_session_secret
       ADMIN_INITIAL_PASSWORD_FILE: /run/secrets/ssl_tower_admin_password
-      # Optional alert-channel secrets — uncomment both the env var here and
-      # the matching entries in `secrets:` (service + top-level) once you've
-      # created them, e.g.:
-      #   SMTP_PASSWORD_FILE: /run/secrets/ssl_tower_smtp_password
-      #   TEAMS_WEBHOOK_URL_FILE: /run/secrets/ssl_tower_teams_webhook
+      # Optional alert-channel secrets. Uncommented below on the assumption
+      # your .env has SMTP_PASSWORD / TEAMS_WEBHOOK_URL set, since
+      # `make docker-secrets` only creates these two secrets when it finds a
+      # non-empty value for them in .env (see the Makefile target). If your
+      # .env doesn't have one (or either) of these values, re-comment the
+      # matching line here *and* its entry in `secrets:` below *and* the
+      # top-level `secrets:` block at the bottom of this file before
+      # deploying — these are `external: true` secrets, so a reference to
+      # one that was never created makes `docker stack deploy` fail outright
+      # rather than just leaving that alert channel off.
+      SMTP_PASSWORD_FILE: /run/secrets/ssl_tower_smtp_password
+      TEAMS_WEBHOOK_URL_FILE: /run/secrets/ssl_tower_teams_webhook
     secrets:
       - ssl_tower_database_url
       - ssl_tower_encryption_key
       - ssl_tower_session_secret
       - ssl_tower_admin_password
+      - ssl_tower_smtp_password
+      - ssl_tower_teams_webhook
     ports:
       - "8080:8080"
     networks:
@@ -137,7 +150,11 @@ secrets:
     external: true
   ssl_tower_admin_password:
     external: true
-  # ssl_tower_smtp_password:
-  #   external: true
-  # ssl_tower_teams_webhook:
-  #   external: true
+  # Re-comment these two (and their references above) if your .env doesn't
+  # have SMTP_PASSWORD / TEAMS_WEBHOOK_URL set — `make docker-secrets` won't
+  # have created them, and an `external: true` secret that doesn't exist
+  # makes the whole deploy fail, not just that alert channel.
+  ssl_tower_smtp_password:
+    external: true
+  ssl_tower_teams_webhook:
+    external: true

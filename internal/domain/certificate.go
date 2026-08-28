@@ -160,6 +160,15 @@ type Certificate struct {
 	Notes     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// DigiCertOrderID is set once this certificate has actually been ordered
+	// through the DigiCert integration (Phase 6) — empty for every
+	// certificate obtained any other way (self-signed, Root-CA-signed,
+	// manually pasted from a CA, PFX-imported). When a certificate with a
+	// DigiCertOrderID is later renewed through DigiCertService, that order
+	// ID is what lets the renewal use DigiCert's faster reissue path instead
+	// of placing a brand-new order — see DigiCertService.Submit.
+	DigiCertOrderID string
 }
 
 // HasPrivateKey reports whether this record holds key material at all —
@@ -247,20 +256,71 @@ func (c *Certificate) ExpiresIn() string {
 // HealthStatus classifies the issued certificate's expiry against the
 // configured thresholds. It is "" for a certificate that hasn't been issued
 // yet — there's nothing to grade until then.
-func (c *Certificate) HealthStatus(warningDays, criticalDays int) CheckStatus {
+//
+// Two kinds of threshold are checked, and either can trip a tier on its own:
+// an absolute day count (warningDays/criticalDays, unchanged since Phase 10)
+// and a percentage of the certificate's own total lifetime remaining
+// (warningPercent/criticalPercent — see LifetimePercentRemaining). The
+// percent check only applies to externally-issued certificates
+// (TrustClass() == TrustExternal): those are the ones actually bound by the
+// CA/Browser Forum's shrinking public max-validity schedule (200 days today,
+// dropping to 100 in 2027 and 47 in 2029), so a shorter total lifetime
+// should mean earlier relative warning. An internal certificate's validity
+// period is a value this app's own operator chose — often years — so a
+// percentage of it is meaningless for urgency and would otherwise flag a
+// long-lived internal certificate "expiring" for a large fraction of its
+// life; internal certificates are deliberately exempt and keep behaving
+// exactly as before, graded on the day-based thresholds alone. For a
+// concrete case: a 200-day external certificate hits a 33%-remaining
+// warning at 66 days left, well before the fixed 30-day threshold would
+// fire — real, meaningfully earlier notice. Once the public ceiling reaches
+// 47 days, 33% remaining is only ~15.5 days, so the fixed 30-day threshold
+// (still the more conservative of the two, since the check fires on
+// whichever trips first) keeps providing the same lead time it does today.
+func (c *Certificate) HealthStatus(warningDays, criticalDays, warningPercent, criticalPercent int) CheckStatus {
 	days := c.DaysRemaining()
 	if c == nil || c.Status != CertIssued || days == nil {
 		return ""
 	}
+	pct := 100.0
+	if c.TrustClass() == TrustExternal {
+		pct = c.LifetimePercentRemaining()
+	}
 	switch {
 	case *days < 0:
 		return StatusExpired
-	case *days <= criticalDays:
+	case *days <= criticalDays || pct <= float64(criticalPercent):
 		return StatusCritical
-	case *days <= warningDays:
+	case *days <= warningDays || pct <= float64(warningPercent):
 		return StatusExpiring
 	default:
 		return StatusOK
+	}
+}
+
+// LifetimePercentRemaining returns the percentage of a certificate's total
+// validity window (NotBefore..NotAfter) still remaining, as of now. It
+// returns 100 — a value that never trips a percent-based threshold — when
+// the window can't be computed (NotBefore or NotAfter missing, or a
+// zero/negative window), so percent-based thresholds are purely additive
+// and never misfire on incomplete data such as older records issued before
+// NotBefore was tracked.
+func (c *Certificate) LifetimePercentRemaining() float64 {
+	if c == nil || c.NotBefore == nil || c.NotAfter == nil {
+		return 100
+	}
+	total := c.NotAfter.Sub(*c.NotBefore)
+	if total <= 0 {
+		return 100
+	}
+	pct := float64(time.Until(*c.NotAfter)) / float64(total) * 100
+	switch {
+	case pct < 0:
+		return 0
+	case pct > 100:
+		return 100
+	default:
+		return pct
 	}
 }
 

@@ -27,6 +27,8 @@ type Server struct {
 	audit        *service.AuditService
 	content      *service.SiteContentService
 	requests     *service.CertificateRequestService
+	digicert     *service.DigiCertService
+	settings     *service.SettingsService
 	log          *slog.Logger
 	cookieSecure bool
 }
@@ -39,6 +41,8 @@ func NewServer(
 	audit *service.AuditService,
 	content *service.SiteContentService,
 	requests *service.CertificateRequestService,
+	digicertSvc *service.DigiCertService,
+	settings *service.SettingsService,
 	log *slog.Logger,
 	cookieSecure bool,
 ) (*Server, error) {
@@ -55,6 +59,8 @@ func NewServer(
 		audit:        audit,
 		content:      content,
 		requests:     requests,
+		digicert:     digicertSvc,
+		settings:     settings,
 		log:          log,
 		cookieSecure: cookieSecure,
 	}
@@ -111,6 +117,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /certificates/import", s.requireWrite(s.handleCertificateImport))
 	s.mux.HandleFunc("POST /certificates/import-csr", s.requireWrite(s.handleCertificateImportCSR))
 	s.mux.HandleFunc("POST /certificates/import-pfx", s.requireWrite(s.handleCertificateImportPFX))
+	s.mux.HandleFunc("POST /certificates/bulk-renew", s.requireWrite(s.handleCertificateBulkRenew))
 	s.mux.HandleFunc("GET /certificates/{id}", s.requireAuth(s.handleCertificateDetail))
 	s.mux.HandleFunc("DELETE /certificates/{id}", s.requireWrite(s.handleCertificateDelete))
 	s.mux.HandleFunc("POST /certificates/{id}/certificate", s.requireWrite(s.handleCertificateAttach))
@@ -148,6 +155,14 @@ func (s *Server) routes() {
 	// Technical docs — admin only.
 	s.mux.HandleFunc("GET /admin/docs", s.requireAdmin(s.handleAdminDocsPage))
 
+	// Settings (v1.5) — admin only, same tier as Root CA management and
+	// chain editing: these govern alerting/ticket behavior app-wide, and the
+	// encryption-key section on the same page can re-encrypt every stored
+	// private key.
+	s.mux.HandleFunc("GET /settings", s.requireAdmin(s.handleSettingsPage))
+	s.mux.HandleFunc("POST /settings", s.requireAdmin(s.handleSettingsSubmit))
+	s.mux.HandleFunc("POST /settings/encryption-key", s.requireAdmin(s.handleSettingsEncryptionKeyRotate))
+
 	// Theme preference — public, cosmetic, no session needed.
 	s.mux.HandleFunc("POST /theme", s.handleThemeToggle)
 
@@ -168,6 +183,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tickets/{id}/reject", s.requireWrite(s.handleTicketReject))
 	s.mux.HandleFunc("POST /tickets/{id}/cancel", s.requireWrite(s.handleRequestCancel))
 	s.mux.HandleFunc("POST /tickets/{id}/deliver", s.requireWrite(s.handleTicketDeliver))
+	s.mux.HandleFunc("POST /tickets/{id}/send-email", s.requireWrite(s.handleTicketSendEmail))
+	s.mux.HandleFunc("POST /tickets/{id}/digicert/submit", s.requireWrite(s.handleTicketDigiCertSubmit))
+	s.mux.HandleFunc("POST /tickets/{id}/digicert/check-status", s.requireWrite(s.handleTicketDigiCertCheckStatus))
 }
 
 // --- shared view helpers ---------------------------------------------------

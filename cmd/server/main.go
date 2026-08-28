@@ -11,8 +11,10 @@ import (
 	"github.com/ivangiovn/ssl-generator/internal/config"
 	"github.com/ivangiovn/ssl-generator/internal/database"
 	delivery "github.com/ivangiovn/ssl-generator/internal/delivery/http"
+	"github.com/ivangiovn/ssl-generator/internal/domain"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/authcrypto"
-	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/digicert"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/ldapauth"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/secret"
 	"github.com/ivangiovn/ssl-generator/internal/repository/postgres"
 	"github.com/ivangiovn/ssl-generator/internal/service"
@@ -48,38 +50,72 @@ func run() error {
 		return err
 	}
 
-	sealer, err := secret.NewSealer(cfg.EncryptionKey)
+	// SettingsService owns every portal-editable operational setting (see
+	// CLAUDE.md's v1.5 "config → portal" locked decision). Bootstrap is
+	// safe to call on every boot: it only seeds a key from cfg when
+	// app_settings has no row for it yet, exactly like AuthService.
+	// Bootstrap below — from the first successful boot against a given
+	// database onward, /settings and the database are authoritative and
+	// these cfg values are ignored.
+	settingsRepo := postgres.NewSettingsRepository(pool)
+	settingsSvc := service.NewSettingsService(settingsRepo, log)
+	seed := service.SeedValues{
+		Settings: domain.AppSettings{
+			ExpiryWarningDays:  cfg.ExpiryWarningDays,
+			ExpiryCriticalDays: cfg.ExpiryCriticalDays,
+			ExpiryFinalDays:    cfg.ExpiryFinalDays,
+			SMTPHost:           cfg.SMTPHost,
+			SMTPPort:           cfg.SMTPPort,
+			SMTPUsername:       cfg.SMTPUsername,
+			SMTPPassword:       cfg.SMTPPassword,
+			AlertEmailFrom:     cfg.AlertFrom,
+			AlertEmailTo:       cfg.AlertTo,
+			TeamsWebhookURL:    cfg.TeamsWebhookURL,
+			TicketSLADays:      cfg.TicketSLADays,
+		},
+		EncryptionKey: cfg.EncryptionKey,
+	}
+	if err := settingsSvc.Bootstrap(ctx, seed); err != nil {
+		return err
+	}
+
+	// The encryption key is read straight from storage (bypassing
+	// SettingsService's cached AppSettings snapshot — see
+	// EncryptionKeyValue's doc comment) to build the sealer CertificateService
+	// starts with. From here on the *only* supported way to change it is
+	// CertificateService.RotateEncryptionKey, which re-encrypts every stored
+	// private key and swaps the live sealer atomically — never by editing
+	// APP_ENCRYPTION_KEY and restarting.
+	encryptionKey, err := settingsSvc.EncryptionKeyValue(ctx)
+	if err != nil {
+		return err
+	}
+	sealer, err := secret.NewSealer(encryptionKey)
 	if err != nil {
 		return err
 	}
 	if !sealer.Enabled() {
-		log.Warn("APP_ENCRYPTION_KEY is not set — private keys will be stored unencrypted")
+		log.Warn("the vault's encryption key is not set — private keys will be stored unencrypted (set it from /settings)")
 	}
 
 	// repository -> service -> delivery
 	certRepo := postgres.NewCertificateRepository(pool)
 	rootCARepo := postgres.NewRootCARepository(pool)
+	rotationRepo := postgres.NewEncryptionRotationRepository(pool)
 
-	certSvc := service.NewCertificateService(certRepo, rootCARepo, sealer, log, service.CertificateOptions{
-		WarningDays:  cfg.ExpiryWarningDays,
-		CriticalDays: cfg.ExpiryCriticalDays,
+	certSvc := service.NewCertificateService(certRepo, rootCARepo, rotationRepo, sealer, settingsSvc, log, service.CertificateOptions{
+		WarningPercent:  cfg.ExpiryWarningPercent,
+		CriticalPercent: cfg.ExpiryCriticalPercent,
 	})
 
-	emailNotifier := notify.NewEmailNotifier(notify.EmailConfig{
-		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
-		From: cfg.AlertFrom, To: cfg.AlertTo,
-	})
-	teamsNotifier := notify.NewTeamsNotifier(cfg.TeamsWebhookURL)
-	alertSvc := service.NewAlertService(certRepo, emailNotifier, teamsNotifier, log, service.AlertThresholds{
-		WarningDays:  cfg.ExpiryWarningDays,
-		CriticalDays: cfg.ExpiryCriticalDays,
-		FinalDays:    cfg.ExpiryFinalDays,
+	alertSvc := service.NewAlertService(certRepo, settingsSvc, log, service.AlertThresholds{
+		WarningPercent:  cfg.ExpiryWarningPercent,
+		CriticalPercent: cfg.ExpiryCriticalPercent,
 	})
 	if alertSvc.Enabled() {
-		log.Info("alerting enabled", "email", emailNotifier.Enabled(), "teams", teamsNotifier.Enabled())
+		log.Info("alerting enabled", "email", settingsSvc.EmailNotifier().Enabled(), "teams", settingsSvc.TeamsNotifier().Enabled())
 	} else {
-		log.Warn("alerting is not configured — set SMTP_HOST/ALERT_EMAIL_* and/or TEAMS_WEBHOOK_URL to enable it")
+		log.Warn("alerting is not configured — set SMTP/ALERT_EMAIL_* and/or the Teams webhook from /settings to enable it")
 	}
 	certSvc.SetAlerter(alertSvc)
 
@@ -100,11 +136,34 @@ func run() error {
 		sessionSecret = generated
 		log.Warn("SESSION_SECRET is not set — using an ephemeral secret for this run; a restart mid-MFA-login will require signing in again")
 	}
+	var ldapClient ldapauth.Client
+	if cfg.LDAPURL != "" {
+		ldapClient = ldapauth.NewLDAPClient(ldapauth.Config{
+			URL:          cfg.LDAPURL,
+			BindDN:       cfg.LDAPBindDN,
+			BindPassword: cfg.LDAPBindPassword,
+			BaseDN:       cfg.LDAPBaseDN,
+			UserFilter:   cfg.LDAPUserFilter,
+			GroupFilter:  cfg.LDAPGroupFilter,
+		})
+		log.Info("LDAP authentication enabled", "url", cfg.LDAPURL,
+			"editor_groups", len(cfg.LDAPRoleMapEditor), "viewer_groups", len(cfg.LDAPRoleMapViewer),
+			"requester_groups", len(cfg.LDAPRoleMapRequester))
+	} else {
+		log.Info("LDAP authentication is not configured — set LDAP_URL to enable it")
+	}
+
 	authSvc := service.NewAuthService(userRepo, log, service.AuthOptions{
 		SessionSecret:   sessionSecret,
 		IdleTimeout:     cfg.SessionIdleTimeout,
 		AbsoluteTimeout: cfg.SessionAbsoluteTimeout,
 		Issuer:          "SSL Tower",
+		LDAP:            ldapClient,
+		LDAPRoleMap: service.LDAPRoleMapping{
+			Editor:    cfg.LDAPRoleMapEditor,
+			Viewer:    cfg.LDAPRoleMapViewer,
+			Requester: cfg.LDAPRoleMapRequester,
+		},
 	})
 	if err := authSvc.Bootstrap(ctx, cfg.AdminEmail, cfg.AdminInitialPassword); err != nil {
 		log.Warn("account bootstrap skipped", "error", err)
@@ -117,9 +176,25 @@ func run() error {
 	contentSvc := service.NewSiteContentService(contentRepo)
 
 	requestRepo := postgres.NewCertificateRequestRepository(pool)
-	requestSvc := service.NewCertificateRequestService(requestRepo, certSvc, emailNotifier, teamsNotifier, log, cfg.TicketSLADays)
+	requestSvc := service.NewCertificateRequestService(requestRepo, certSvc, settingsSvc, log)
 
-	server, err := delivery.NewServer(certSvc, sweeper, authSvc, auditSvc, contentSvc, requestSvc, log, cfg.CookieSecure)
+	if cfg.RenewalSweepInterval > 0 {
+		renewalSweeper := service.NewRenewalSweeper(requestSvc, log, cfg.RenewalSweepInterval)
+		go renewalSweeper.Run(ctx)
+	} else {
+		log.Info("renewal auto-drafting is not configured — set RENEWAL_SWEEP_INTERVAL to enable it")
+	}
+
+	var digiCertClient digicert.Client
+	if cfg.DigiCertAPIKey != "" {
+		digiCertClient = digicert.NewHTTPClient(cfg.DigiCertBaseURL, cfg.DigiCertAPIKey)
+		log.Info("DigiCert integration enabled", "base_url", cfg.DigiCertBaseURL)
+	} else {
+		log.Info("DigiCert integration is not configured — set DIGICERT_API_KEY to enable it")
+	}
+	digiCertSvc := service.NewDigiCertService(requestRepo, certSvc, digiCertClient, log)
+
+	server, err := delivery.NewServer(certSvc, sweeper, authSvc, auditSvc, contentSvc, requestSvc, digiCertSvc, settingsSvc, log, cfg.CookieSecure)
 	if err != nil {
 		return err
 	}

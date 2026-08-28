@@ -191,11 +191,12 @@ func templateFuncs() template.FuncMap {
 			}
 			return strings.Join(items, sep)
 		},
-		"badgeClass":  badgeClass,
-		"dotClass":    dotClass,
-		"flashClass":  flashClass,
-		"statusLabel": func(s domain.CheckStatus) string { return statusLabel(s) },
-		"lifetimeBar": lifetimeBar,
+		"badgeClass":     badgeClass,
+		"dotClass":       dotClass,
+		"flashClass":     flashClass,
+		"statusLabel":    func(s domain.CheckStatus) string { return statusLabel(s) },
+		"lifetimeBar":    lifetimeBar,
+		"percentElapsed": percentElapsed,
 		"deref": func(p *int) int {
 			if p == nil {
 				return 0
@@ -359,9 +360,19 @@ func dotClass(s domain.CheckStatus) string {
 	}
 }
 
-// lifetimeBar returns a 0-100 width for the "time remaining" meter, assuming a
-// nominal 90 day certificate lifetime when the issue date is unknown.
-func lifetimeBar(days *int) int {
+// lifetimeBar returns a 0-100 width for the "time remaining" meter. It uses
+// the certificate's own NotBefore/NotAfter window when both are on file
+// (accurate for anything issued since that field was added), falling back
+// to a nominal 90-day assumption for older records where NotBefore is
+// missing — matching this func's original, NotBefore-unaware behavior.
+func lifetimeBar(c *domain.Certificate) int {
+	if c == nil {
+		return 0
+	}
+	if c.NotBefore != nil {
+		return int(c.LifetimePercentRemaining())
+	}
+	days := c.DaysRemaining()
 	if days == nil {
 		return 0
 	}
@@ -374,4 +385,17 @@ func lifetimeBar(days *int) int {
 	default:
 		return d * 100 / 90
 	}
+}
+
+// percentElapsed renders the share of a certificate's total validity window
+// already used, for the "why" hint shown next to external certificates —
+// the percent-of-lifetime-remaining alert threshold only ever applies to
+// them (see domain.Certificate.HealthStatus). Returns -1 when it can't be
+// computed (NotBefore missing), so the template can skip the hint entirely
+// rather than showing a misleading number derived from the 90-day fallback.
+func percentElapsed(c *domain.Certificate) int {
+	if c == nil || c.NotBefore == nil {
+		return -1
+	}
+	return 100 - int(c.LifetimePercentRemaining())
 }

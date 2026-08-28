@@ -325,6 +325,100 @@ func (s *Server) handleTicketDeliver(w http.ResponseWriter, r *http.Request) {
 	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "Marked delivered."})
 }
 
+// handleTicketSendEmail emails the ticket's result certificate straight to a
+// recipient, as an alternative to downloading it and handing it over by
+// hand. The private-key checkbox is only ever honored for an admin — an
+// editor's submitted "on" value is silently ignored here rather than
+// trusted, exactly mirroring handleCertificateDownload's own admin-vs-editor
+// gate on key-bearing formats.
+func (s *Server) handleTicketSendEmail(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	user := s.currentUser(r)
+	includeKey := r.PostFormValue("include_key") == "on" && user.Role.CanManageUsers()
+
+	ticket, err := s.requests.SendCertificateEmail(r.Context(), service.SendCertificateEmailInput{
+		TicketID:   id,
+		ActorID:    user.ID,
+		Format:     r.PostFormValue("format"),
+		Recipient:  r.PostFormValue("recipient"),
+		IncludeKey: includeKey,
+	})
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "Couldn't send: " + msg})
+		return
+	}
+	detail := "sent to " + r.PostFormValue("recipient")
+	if includeKey {
+		s.recordAudit(r, domain.AuditKeyDownloaded, "certificate_request", ticket.ID.String(), detail)
+	}
+	s.recordAudit(r, domain.AuditRequestEmailed, "certificate_request", ticket.ID.String(), detail)
+	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "Certificate emailed to " + r.PostFormValue("recipient") + "."})
+}
+
+// handleTicketDigiCertSubmit submits an in-progress external renewal
+// ticket to DigiCert — generating a fresh CSR from the certificate being
+// renewed and placing an order (or reissue) against DigiCert's API. See
+// DigiCertService.Submit for the full scoping rules (external, renewal,
+// in-progress, not already submitted).
+func (s *Server) handleTicketDigiCertSubmit(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	days, _ := strconv.Atoi(r.PostFormValue("days"))
+
+	ticket, err := s.digicert.Submit(r.Context(), service.DigiCertSubmitInput{
+		TicketID: id,
+		ActorID:  s.currentUser(r).ID,
+		Days:     days,
+	})
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "Couldn't submit to DigiCert: " + msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditDigiCertSubmitted, "certificate_request", ticket.ID.String(),
+		"digicert order "+ticket.ExternalOrderRef)
+	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "Submitted to DigiCert — order " + ticket.ExternalOrderRef + ", status: " + ticket.ExternalOrderStatus + "."})
+}
+
+// handleTicketDigiCertCheckStatus polls DigiCert for a submitted order's
+// current state, and fulfills the ticket automatically once DigiCert
+// reports the certificate issued. See DigiCertService.CheckStatus.
+func (s *Server) handleTicketDigiCertCheckStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	ticket, cert, err := s.digicert.CheckStatus(r.Context(), service.DigiCertCheckStatusInput{
+		TicketID: id,
+		ActorID:  s.currentUser(r).ID,
+	})
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "Couldn't check DigiCert status: " + msg})
+		return
+	}
+	if cert != nil {
+		s.recordAudit(r, domain.AuditRequestFulfilled, "certificate_request", ticket.ID.String(), cert.CommonName)
+		s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "DigiCert issued the certificate — ticket fulfilled. Deliver it to the requester by hand."})
+		return
+	}
+	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "info", Message: "DigiCert status: " + ticket.ExternalOrderStatus + " — not issued yet."})
+}
+
 // --- shared helpers -------------------------------------------------------
 
 func ticketFilterFrom(r *http.Request) domain.CertificateRequestFilter {
@@ -366,6 +460,13 @@ func (s *Server) decorateTicketView(r *http.Request, view map[string]any, id uui
 			view["ResultFormats"] = certificateFormats(result)
 			view["CanDownloadResult"] = s.currentUser(r).Role.CanManageUsers()
 			view["CanExportResultCSR"] = s.currentUser(r).Role.CanWrite()
+			// "Send by email" is available to anyone who can already act on
+			// the ticket (requireWrite gates the route) — only the private
+			// key checkbox inside that form is admin-only, gated the same
+			// way as CanDownloadResult above.
+			view["SendFormats"] = certificateSendFormats(result)
+			view["CanIncludeKeyInEmail"] = s.currentUser(r).Role.CanManageUsers() && result.HasPrivateKey()
+			view["EmailConfigured"] = s.requests.EmailReady()
 		}
 	}
 	if ticket.Status == domain.RequestPending && ticket.TrustClass == domain.TrustInternal {
@@ -373,6 +474,14 @@ func (s *Server) decorateTicketView(r *http.Request, view map[string]any, id uui
 			view["RootCAs"] = rootCAs
 		}
 	}
+	// Gates the "Submit to DigiCert"/"Check status" section — shown only
+	// for an in-progress (approved, not yet fulfilled) external renewal
+	// ticket naming an existing certificate, and only when the integration
+	// is actually configured.
+	view["DigiCertEnabled"] = s.digicert.Enabled()
+	view["DigiCertEligible"] = ticket.TrustClass == domain.TrustExternal &&
+		ticket.Type == domain.RequestRenewal && ticket.ExistingCertificateID != nil &&
+		(ticket.Status == domain.RequestInProgress || ticket.SubmittedToExternalCA())
 	return true
 }
 

@@ -71,6 +71,40 @@ func TestApplySecretFilesNoFileVarIsNoop(t *testing.T) {
 	}
 }
 
+func TestOptionalDurationEmptyIsOffNotError(t *testing.T) {
+	clearEnv(t, "RENEWAL_SWEEP_INTERVAL")
+
+	d, err := optionalDuration("RENEWAL_SWEEP_INTERVAL")
+	if err != nil {
+		t.Fatalf("optionalDuration: unexpected error for an unset key: %v", err)
+	}
+	if d != 0 {
+		t.Fatalf("optionalDuration = %v, want 0 (disabled) for an unset key", d)
+	}
+}
+
+func TestOptionalDurationParsesWhenSet(t *testing.T) {
+	clearEnv(t, "RENEWAL_SWEEP_INTERVAL")
+	os.Setenv("RENEWAL_SWEEP_INTERVAL", "12h")
+
+	d, err := optionalDuration("RENEWAL_SWEEP_INTERVAL")
+	if err != nil {
+		t.Fatalf("optionalDuration: %v", err)
+	}
+	if d.String() != "12h0m0s" {
+		t.Fatalf("optionalDuration = %v, want 12h0m0s", d)
+	}
+}
+
+func TestOptionalDurationRejectsGarbage(t *testing.T) {
+	clearEnv(t, "RENEWAL_SWEEP_INTERVAL")
+	os.Setenv("RENEWAL_SWEEP_INTERVAL", "not-a-duration")
+
+	if _, err := optionalDuration("RENEWAL_SWEEP_INTERVAL"); err == nil {
+		t.Fatal("optionalDuration: expected an error for an unparseable non-empty value, since that's a typo, not \"off\"")
+	}
+}
+
 func TestApplySecretFilesMissingFileErrors(t *testing.T) {
 	clearEnv(t, "APP_ENCRYPTION_KEY", "APP_ENCRYPTION_KEY_FILE")
 	os.Setenv("APP_ENCRYPTION_KEY_FILE", "/nonexistent/path/for/test")

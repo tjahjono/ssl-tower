@@ -1,0 +1,34 @@
+{{define "settings-encryption-response"}}
+<div id="settings-encryption-section">{{template "settings-encryption-section" .}}</div>
+{{template "flash-oob" .Flash}}
+{{end}}
+
+{{define "settings-encryption-section"}}
+<section class="space-y-4 rounded-xl border border-rose-500/20 bg-rose-500/[0.04] p-6">
+  <div>
+    <h2 class="text-sm font-semibold text-hue-rose-strong">Danger zone — encryption key</h2>
+    <p class="mt-0.5 text-xs text-ink-5">
+      This is the AES key that encrypts every stored private key (certificates and Root CAs) at rest.
+      Changing it re-encrypts everything already stored, in one atomic step — nothing is left partially
+      re-encrypted if it fails partway through. Currently
+      {{if .EncryptionEnabled}}<span class="font-medium text-hue-emerald">enabled</span>{{else}}<span class="font-medium text-hue-amber">disabled — private keys are stored as plaintext</span>{{end}}.
+    </p>
+  </div>
+
+  <form hx-post="/settings/encryption-key" hx-target="#settings-encryption-section" hx-swap="outerHTML"
+        hx-confirm="Rotate the vault's encryption key? Every stored private key will be decrypted with the current key and re-encrypted with the new one. This cannot be undone if you lose the new key."
+        class="space-y-3">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div>
+      <label for="encryption_key" class="field-label mb-1 block">New encryption key (base64, 32 bytes)</label>
+      <input id="encryption_key" name="encryption_key" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Leave empty to disable encryption and store private keys as plaintext"
+             class="field-input w-full px-3 py-2 font-mono text-xs">
+      <p class="mt-1 text-xs text-ink-6">Generate one with: <span class="font-mono text-ink-4">openssl rand -base64 32</span></p>
+    </div>
+    <button type="submit" class="btn-secondary px-4 py-2 text-sm text-hue-rose-strong ring-rose-500/30 hover:bg-rose-500/10">
+      Rotate encryption key
+    </button>
+  </form>
+</section>
+{{end}}

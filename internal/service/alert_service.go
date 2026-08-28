@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
-	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
 )
 
 // AlertLevel ranks how urgent a certificate's expiry is. Comparing the
@@ -68,12 +67,20 @@ func (l AlertLevel) color() string {
 	}
 }
 
-// AlertThresholds configures the day-count boundaries that promote a
-// certificate from one alert level to the next.
+// AlertThresholds configures the percent-of-lifetime-remaining boundaries
+// that can promote a certificate's alert level on their own, alongside the
+// day-count boundaries — those are portal-editable now (ExpiryWarningDays/
+// ExpiryCriticalDays/ExpiryFinalDays via SettingsService, read live in
+// levelFor) so they're no longer part of this struct. See
+// domain.Certificate.HealthStatus's doc comment for why the percent check
+// only ever applies to externally-issued certificates, and why a single
+// fixed percentage can still leave long-lived internal certificates'
+// alerting completely unchanged. FinalDays has no percent counterpart: it's
+// the last-chance, day-before-expiry tier, where a relative signal adds
+// nothing a fixed one doesn't already cover.
 type AlertThresholds struct {
-	WarningDays  int
-	CriticalDays int
-	FinalDays    int
+	WarningPercent  int
+	CriticalPercent int
 }
 
 // AlertRepository is the narrow persistence port alerting needs: just enough
@@ -89,33 +96,31 @@ type AlertRepository interface {
 // per state change, never once per evaluation.
 type AlertService struct {
 	repo       AlertRepository
-	email      *notify.EmailNotifier
-	teams      *notify.TeamsNotifier
+	settings   *SettingsService
 	log        *slog.Logger
 	thresholds AlertThresholds
 }
 
-// NewAlertService builds the alerting service. email and teams may be
-// notifiers built from empty configuration — Send/Enabled on both handle
-// that as a no-op, so callers never need to check for nil channels here.
-func NewAlertService(repo AlertRepository, email *notify.EmailNotifier, teams *notify.TeamsNotifier, log *slog.Logger, thresholds AlertThresholds) *AlertService {
-	if thresholds.WarningDays <= 0 {
-		thresholds.WarningDays = 30
+// NewAlertService builds the alerting service. Email/Teams notifiers are
+// built fresh from settings.Current() at the moment of every send (see
+// notify) rather than held as fixed fields — both are cheap, stateless
+// config holders, so this is what makes an admin's SMTP/Teams change in the
+// portal take effect on the very next alert, no restart needed.
+func NewAlertService(repo AlertRepository, settings *SettingsService, log *slog.Logger, thresholds AlertThresholds) *AlertService {
+	if thresholds.WarningPercent <= 0 {
+		thresholds.WarningPercent = 33
 	}
-	if thresholds.CriticalDays <= 0 {
-		thresholds.CriticalDays = 7
+	if thresholds.CriticalPercent <= 0 {
+		thresholds.CriticalPercent = 10
 	}
-	if thresholds.FinalDays <= 0 {
-		thresholds.FinalDays = 1
-	}
-	return &AlertService{repo: repo, email: email, teams: teams, log: log, thresholds: thresholds}
+	return &AlertService{repo: repo, settings: settings, log: log, thresholds: thresholds}
 }
 
 // Enabled reports whether at least one notification channel is configured —
 // useful for a boot-time log line so a silently misconfigured deployment
 // isn't discovered only when the first certificate actually expires.
 func (a *AlertService) Enabled() bool {
-	return a != nil && (a.email.Enabled() || a.teams.Enabled())
+	return a != nil && (a.settings.EmailNotifier().Enabled() || a.settings.TeamsNotifier().Enabled())
 }
 
 func (a *AlertService) levelFor(c *domain.Certificate) AlertLevel {
@@ -124,12 +129,17 @@ func (a *AlertService) levelFor(c *domain.Certificate) AlertLevel {
 		return AlertNone
 	}
 	d := *days
+	pct := 100.0
+	if c.TrustClass() == domain.TrustExternal {
+		pct = c.LifetimePercentRemaining()
+	}
+	cur := a.settings.Current()
 	switch {
-	case d <= a.thresholds.FinalDays:
+	case d <= cur.ExpiryFinalDays:
 		return AlertFinal
-	case d <= a.thresholds.CriticalDays:
+	case d <= cur.ExpiryCriticalDays || pct <= float64(a.thresholds.CriticalPercent):
 		return AlertCritical
-	case d <= a.thresholds.WarningDays:
+	case d <= cur.ExpiryWarningDays || pct <= float64(a.thresholds.WarningPercent):
 		return AlertWarning
 	default:
 		return AlertNone
@@ -175,13 +185,15 @@ func (a *AlertService) Evaluate(ctx context.Context, c *domain.Certificate) {
 // never block certificate operations, and the other channel might still get
 // through.
 func (a *AlertService) notify(ctx context.Context, subject, body, color string) {
-	if a.email.Enabled() {
-		if err := a.email.Send(subject, body); err != nil {
+	email := a.settings.EmailNotifier()
+	teams := a.settings.TeamsNotifier()
+	if email.Enabled() {
+		if err := email.Send(subject, body); err != nil {
 			a.log.Warn("alert: email send failed", "error", err)
 		}
 	}
-	if a.teams.Enabled() {
-		if err := a.teams.Send(ctx, subject, body, color); err != nil {
+	if teams.Enabled() {
+		if err := teams.Send(ctx, subject, body, color); err != nil {
 			a.log.Warn("alert: teams send failed", "error", err)
 		}
 	}

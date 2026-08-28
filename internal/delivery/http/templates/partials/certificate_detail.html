@@ -72,8 +72,16 @@
                 <span class="text-ink-5">{{formatDate $c.NotBefore}} → {{formatDate $c.NotAfter}}</span>
               </div>
               <div class="h-1.5 overflow-hidden rounded-full bg-line/5">
-                <div class="h-full rounded-full {{dotClass .HealthStatus}}" style="width: {{lifetimeBar $c.DaysRemaining}}%"></div>
+                <div class="h-full rounded-full {{dotClass .HealthStatus}}" style="width: {{lifetimeBar $c}}%"></div>
               </div>
+              {{if eq $c.TrustClass "external"}}
+                {{$elapsed := percentElapsed $c}}
+                {{if ge $elapsed 0}}
+                  <p class="mt-1.5 text-xs text-ink-6">
+                    {{$elapsed}}% of this certificate's total lifetime has elapsed — external certificates are also flagged relative to their own validity window, not just a fixed day count, since public CAs now issue much shorter-lived certificates than they used to.
+                  </p>
+                {{end}}
+              {{end}}
             </div>
           {{end}}
           <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
