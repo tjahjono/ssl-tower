@@ -25,6 +25,23 @@ const (
 
 	SettingTicketSLADays = "ticket_sla_days"
 
+	// LDAP settings (v1.8) — portal-editable, same "empty URL = off"
+	// convention every other optional integration in this table already
+	// follows. See CLAUDE.md's v1.8 locked decision for the full model;
+	// AppSettings' own field doc comments below cover the individual
+	// fields' semantics (carried over unchanged from the old env-only
+	// config.Config fields of the same names).
+	SettingLDAPURL          = "ldap_url"
+	SettingLDAPBindDN       = "ldap_bind_dn"
+	SettingLDAPBindPassword = "ldap_bind_password"
+	SettingLDAPBaseDN       = "ldap_base_dn"
+	SettingLDAPUserFilter   = "ldap_user_filter"
+	SettingLDAPGroupFilter  = "ldap_group_filter"
+
+	SettingLDAPRoleMapEditor    = "ldap_role_map_editor"
+	SettingLDAPRoleMapViewer    = "ldap_role_map_viewer"
+	SettingLDAPRoleMapRequester = "ldap_role_map_requester"
+
 	// SettingEncryptionKey is persisted in this same table — there is
 	// nowhere else durable to put it once it's portal-editable — but it is
 	// deliberately NOT part of AppSettings/SettingsService's generic
@@ -56,6 +73,30 @@ type AppSettings struct {
 	TeamsWebhookURL string
 
 	TicketSLADays int
+
+	// LDAP authentication (v1.8, portal-editable — env-only as of v1.4).
+	// LDAPURL is the "empty = off" toggle: every account authenticates with
+	// a local password when it's empty, exactly as if LDAP had never been
+	// configured. Once set, LDAPBindDN/LDAPBindPassword/LDAPBaseDN/
+	// LDAPUserFilter/LDAPGroupFilter become required and at least one of
+	// LDAPRoleMapEditor/Viewer/Requester must be non-empty — enforced by
+	// SettingsService.Update, not here (this struct carries no validation
+	// of its own, matching every other field in it). See CLAUDE.md's LDAP
+	// locked decisions for the full authentication model.
+	LDAPURL          string
+	LDAPBindDN       string
+	LDAPBindPassword string
+	LDAPBaseDN       string
+	LDAPUserFilter   string
+	LDAPGroupFilter  string
+
+	// LDAPRoleMapEditor/Viewer/Requester each list the LDAP group DNs whose
+	// members hold that role, checked in this order (most privileged
+	// matching group wins). No LDAPRoleMapAdmin field, deliberately: admin
+	// is always locally-granted, never LDAP-derived.
+	LDAPRoleMapEditor    []string
+	LDAPRoleMapViewer    []string
+	LDAPRoleMapRequester []string
 }
 
 // SettingsRepository is the persistence port for admin-editable operational
@@ -93,6 +134,15 @@ type RotationResult struct {
 // narrow interface rather than a method on CertificateRepository or
 // SettingsRepository, since it's the one operation in this app that can
 // corrupt every stored private key if it goes wrong.
+//
+// progress, when non-nil, is called synchronously from inside the still-open
+// transaction: once with (0, total) as soon as the total row count across
+// both tables is known, then once more after each row is re-encrypted. This
+// is what lets the caller show a real, live progress bar (v1.7) rather than
+// a fake animation — but the callback runs before commit, so a progress
+// report of e.g. "30 of 47" is only ever a report of work done inside the
+// pending transaction, not a durability guarantee; a failure after that
+// point still rolls everything back, same as before this existed.
 type EncryptionRotationRepository interface {
-	RotateEncryptionKey(ctx context.Context, oldSealer, newSealer *secret.Sealer, newKeyValue string) (RotationResult, error)
+	RotateEncryptionKey(ctx context.Context, oldSealer, newSealer *secret.Sealer, newKeyValue string, progress func(done, total int)) (RotationResult, error)
 }

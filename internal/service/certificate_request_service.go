@@ -239,6 +239,71 @@ func (s *CertificateRequestService) ApproveExternal(ctx context.Context, in Appr
 	return r, nil
 }
 
+// GenerateCSRInput is the manual "Generate a CSR" ticket action — an
+// in-progress external ticket's own counterpart to DigiCertSubmitInput, but
+// without calling any outside API: it only mints a key pair and CSR for the
+// admin to submit to whichever CA the ticket's PO number is with, by hand.
+type GenerateCSRInput struct {
+	TicketID     uuid.UUID
+	CommonName   string
+	Organization string
+	SANs         string
+	KeyAlgorithm string
+	KeyBits      int
+	KeyCurve     string
+}
+
+// GenerateCSR mints a key pair and CSR for an in-progress external ticket
+// and records the resulting vault record on the ticket's
+// PendingCertificateID — the same field DigiCertService.Submit uses, so
+// FulfillExternal treats a manually-generated CSR exactly like a
+// DigiCert-submitted one: whatever certificate the external CA eventually
+// returns gets attached to this same record (matching the stored private
+// key) instead of being imported as a separate one.
+//
+// Unlike DigiCert submission, which only ever applies to a renewal (it seeds
+// the CSR from the certificate being renewed), this is available for a
+// brand-new external certificate too — there being no existing certificate
+// to copy from just means the admin fills the subject fields by hand,
+// prefilled from the ticket the same way ApproveInternal's form prefills
+// from an internal ticket.
+func (s *CertificateRequestService) GenerateCSR(ctx context.Context, in GenerateCSRInput) (*domain.CertificateRequest, *domain.Certificate, error) {
+	r, err := s.repo.GetByID(ctx, in.TicketID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.TrustClass != domain.TrustExternal {
+		return nil, nil, domain.Invalid("trust_class", "CSR generation only applies to external tickets")
+	}
+	if r.Status != domain.RequestInProgress {
+		return nil, nil, domain.Invalid("status", "approve this ticket before generating a CSR")
+	}
+	if r.PendingCertificateID != nil {
+		return nil, nil, domain.Invalid("status", "a CSR has already been generated for this ticket")
+	}
+
+	pending, err := s.certs.CreateCSR(ctx, CreateCSRInput{
+		CommonName:   in.CommonName,
+		Organization: in.Organization,
+		SANs:         in.SANs,
+		KeyAlgorithm: in.KeyAlgorithm,
+		KeyBits:      in.KeyBits,
+		KeyCurve:     in.KeyCurve,
+		Owner:        r.Owner,
+		Notes:        fmt.Sprintf("Generated for certificate request ticket %s (PO %s).", r.ID, r.PONumber),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pendingID := pending.ID
+	r.PendingCertificateID = &pendingID
+	if err := s.repo.Update(ctx, r); err != nil {
+		return nil, nil, err
+	}
+	return r, pending, nil
+}
+
 // FulfillExternalInput attaches the certificate a public CA issued, closing
 // out an in-progress external ticket.
 type FulfillExternalInput struct {
@@ -250,6 +315,15 @@ type FulfillExternalInput struct {
 // FulfillExternal attaches the externally-issued certificate to the ticket
 // and fulfills it. Per the confirmed workflow, attaching the certificate is
 // what closes an external ticket.
+//
+// If a CSR was already generated for this ticket — via GenerateCSR below, or
+// an earlier DigiCert submission — PendingCertificateID names the vault
+// record already holding that key pair, and the pasted certificate is
+// attached to that same record (matching it to the stored private key)
+// instead of being imported as a brand-new one; a private key pasted
+// alongside it in that case is simply unused, since one is already on file.
+// Otherwise this falls back to the original manual flow: Import creates a
+// fresh record from whatever certificate/chain/key the admin pasted.
 func (s *CertificateRequestService) FulfillExternal(ctx context.Context, in FulfillExternalInput) (*domain.CertificateRequest, *domain.Certificate, error) {
 	r, err := s.repo.GetByID(ctx, in.TicketID)
 	if err != nil {
@@ -262,10 +336,19 @@ func (s *CertificateRequestService) FulfillExternal(ctx context.Context, in Fulf
 		return nil, nil, domain.Invalid("status", "approve this ticket before attaching a certificate")
 	}
 
-	in.Import.Owner = r.Owner
-	cert, err := s.certs.Import(ctx, in.Import)
-	if err != nil {
-		return nil, nil, err
+	var cert *domain.Certificate
+	if r.PendingCertificateID != nil {
+		blob := strings.TrimSpace(in.Import.CertificatePEM) + "\n" + in.Import.ChainPEM
+		cert, err = s.certs.AttachCertificate(ctx, *r.PendingCertificateID, blob)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		in.Import.Owner = r.Owner
+		cert, err = s.certs.Import(ctx, in.Import)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	now := time.Now().UTC()

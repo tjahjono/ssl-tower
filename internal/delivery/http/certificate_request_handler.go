@@ -281,6 +281,39 @@ func (s *Server) handleTicketFulfillExternal(w http.ResponseWriter, r *http.Requ
 	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "Certificate attached — ticket fulfilled. Deliver it to the requester by hand."})
 }
 
+// handleTicketGenerateCSR mints a key pair + CSR for an in-progress external
+// ticket, so the admin has something ready to submit to the external CA
+// without building one by hand outside the app. See
+// CertificateRequestService.GenerateCSR for how the result is later matched
+// up automatically when the issued certificate comes back.
+func (s *Server) handleTicketGenerateCSR(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	bits, _ := strconv.Atoi(r.PostFormValue("key_bits"))
+	_, cert, err := s.requests.GenerateCSR(r.Context(), service.GenerateCSRInput{
+		TicketID:     id,
+		CommonName:   r.PostFormValue("common_name"),
+		Organization: r.PostFormValue("organization"),
+		SANs:         r.PostFormValue("sans"),
+		KeyAlgorithm: r.PostFormValue("key_algorithm"),
+		KeyBits:      bits,
+		KeyCurve:     r.PostFormValue("key_curve"),
+	})
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditCertificateCreated, "certificate", cert.ID.String(), cert.CommonName)
+	s.ticketDetailResponse(w, r, id, &flashMessage{Kind: "success", Message: "CSR generated — open it below to copy the CSR or download the private key, then submit it to the external CA."})
+}
+
 // handleTicketReject rejects a pending ticket with a reason.
 func (s *Server) handleTicketReject(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
@@ -472,6 +505,15 @@ func (s *Server) decorateTicketView(r *http.Request, view map[string]any, id uui
 	if ticket.Status == domain.RequestPending && ticket.TrustClass == domain.TrustInternal {
 		if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
 			view["RootCAs"] = rootCAs
+		}
+	}
+	if ticket.PendingCertificateID != nil {
+		// Set once GenerateCSR (the manual "Generate a CSR" ticket action) or
+		// a DigiCert submission has minted a key pair + CSR for this ticket —
+		// lets the detail page show a link to it instead of the generate
+		// form once one already exists.
+		if pending, err := s.certs.Get(r.Context(), *ticket.PendingCertificateID); err == nil {
+			view["PendingCertificate"] = pending
 		}
 	}
 	// Gates the "Submit to DigiCert"/"Check status" section — shown only

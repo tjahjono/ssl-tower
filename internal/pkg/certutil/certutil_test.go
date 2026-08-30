@@ -381,6 +381,62 @@ func TestSignWithCACapsValidityToTheCAsOwnExpiry(t *testing.T) {
 	}
 }
 
+func TestGenerateRootCAProducesSelfSignedCA(t *testing.T) {
+	cert, certPEM, key, err := GenerateRootCA(Subject{CommonName: "Acme Internal Root CA", Organization: "Acme Corp"}, KeySpec{Algorithm: AlgorithmRSA, Bits: 2048}, 3650)
+	if err != nil {
+		t.Fatalf("GenerateRootCA: %v", err)
+	}
+	if !strings.Contains(certPEM, "BEGIN CERTIFICATE") {
+		t.Error("certPEM is not PEM encoded")
+	}
+	if !cert.IsCA {
+		t.Error("generated root CA must have IsCA = true")
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		t.Error("generated root CA must have KeyUsageCertSign")
+	}
+	if !MatchesKey(cert, key) {
+		t.Error("generated root CA certificate does not match its own generated key")
+	}
+	if cert.Subject.String() != cert.Issuer.String() {
+		t.Error("a root CA must be self-signed: Subject and Issuer must match")
+	}
+	if len(cert.ExtKeyUsage) != 0 {
+		t.Errorf("a root CA should carry no ExtKeyUsage, got %v", cert.ExtKeyUsage)
+	}
+}
+
+func TestGenerateRootCARejectsEmptyCommonName(t *testing.T) {
+	if _, _, _, err := GenerateRootCA(Subject{}, KeySpec{Algorithm: AlgorithmRSA, Bits: 2048}, 3650); err == nil {
+		t.Fatal("expected an error generating a root CA with no common name")
+	}
+}
+
+func TestGenerateRootCADefaultsValidityToTenYears(t *testing.T) {
+	cert, _, _, err := GenerateRootCA(Subject{CommonName: "Acme Internal Root CA"}, KeySpec{Algorithm: AlgorithmRSA, Bits: 2048}, 0)
+	if err != nil {
+		t.Fatalf("GenerateRootCA: %v", err)
+	}
+	days := int(cert.NotAfter.Sub(cert.NotBefore).Hours() / 24)
+	if days < 3649 || days > 3651 {
+		t.Errorf("default validity = %d days, want ~3650", days)
+	}
+}
+
+func TestGenerateRootCASupportsECDSA(t *testing.T) {
+	cert, _, key, err := GenerateRootCA(Subject{CommonName: "Acme ECDSA Root CA"}, KeySpec{Algorithm: AlgorithmECDSA, Curve: "P-384"}, 3650)
+	if err != nil {
+		t.Fatalf("GenerateRootCA: %v", err)
+	}
+	if !MatchesKey(cert, key) {
+		t.Error("generated ECDSA root CA certificate does not match its own generated key")
+	}
+	alg, bits := DescribePublicKey(cert.PublicKey)
+	if alg != "ECDSA" || bits != 384 {
+		t.Errorf("DescribePublicKey = (%s, %d), want (ECDSA, 384)", alg, bits)
+	}
+}
+
 func TestSanitizeBase(t *testing.T) {
 	cases := map[string]string{
 		"":                 "certificate",

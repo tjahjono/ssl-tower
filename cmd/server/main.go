@@ -15,6 +15,7 @@ import (
 	"github.com/ivangiovn/ssl-generator/internal/pkg/authcrypto"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/digicert"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/ldapauth"
+
 	"github.com/ivangiovn/ssl-generator/internal/pkg/secret"
 	"github.com/ivangiovn/ssl-generator/internal/repository/postgres"
 	"github.com/ivangiovn/ssl-generator/internal/service"

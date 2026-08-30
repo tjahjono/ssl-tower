@@ -166,44 +166,113 @@
 
           <div class="mt-5 border-t border-line/5 pt-5">
             <p class="text-xs text-ink-5">
-              Waiting on the CA? Issue a self-signed certificate from this same key so staging can come up now.
+              Waiting on the CA? Issue this certificate from inside the app instead — sign it with
+              its own key, with one of your uploaded Root CAs, or generate a brand-new Root CA on
+              the spot and sign with that.
             </p>
-            <form hx-post="/certificates/{{$c.ID}}/self-sign" hx-target="#certificate-detail" hx-swap="outerHTML" class="mt-3 flex flex-wrap items-center gap-2">
-              <label for="self-sign-days" class="text-xs text-ink-5">Valid for</label>
-              <input id="self-sign-days" name="days" type="number" min="1" max="3650" value="365"
-                     class="field-input w-24 px-3 py-1.5 text-sm">
-              <span class="text-xs text-ink-5">days</span>
-              <button type="submit" class="btn-secondary px-3 py-1.5 text-sm">
-                Self-sign
-              </button>
-            </form>
-          </div>
+            <form hx-post="/certificates/{{$c.ID}}/issue" hx-target="#certificate-detail" hx-swap="outerHTML"
+                  class="mt-3 space-y-3">
+              <div class="flex flex-wrap items-center gap-2">
+                <label for="sign-action" class="text-xs text-ink-5">Sign with</label>
+                <select id="sign-action" name="sign_action" class="field-select py-1.5 pl-3 pr-9 text-sm">
+                  <option value="self">Its own key (self-signed)</option>
+                  {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+                  <option value="new">+ Create a new Root CA&hellip;</option>
+                </select>
+                <label for="issue-days" class="text-xs text-ink-5">Valid for</label>
+                <input id="issue-days" name="days" type="number" min="1" max="3650" value="365"
+                       class="field-input w-24 px-3 py-1.5 text-sm">
+                <span class="text-xs text-ink-5">days</span>
+              </div>
 
-          <div class="mt-5 border-t border-line/5 pt-5">
-            <p class="text-xs text-ink-5">
-              Or sign it with one of your uploaded Root CAs — the certificate stays internal, but
-              is issued by a real CA record instead of by itself.
-            </p>
-            {{if .RootCAs}}
-            <form hx-post="/certificates/{{$c.ID}}/sign-with-root-ca" hx-target="#certificate-detail" hx-swap="outerHTML"
-                  class="mt-3 flex flex-wrap items-center gap-2">
-              <select name="root_ca_id" required class="field-select py-1.5 pl-3 pr-9 text-sm">
-                {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-              </select>
-              <label for="root-ca-sign-days" class="text-xs text-ink-5">Valid for</label>
-              <input id="root-ca-sign-days" name="days" type="number" min="1" max="3650" value="365"
-                     class="field-input w-24 px-3 py-1.5 text-sm">
-              <span class="text-xs text-ink-5">days</span>
+              <div data-show-when="sign_action:new" class="hidden space-y-4 rounded-lg border border-line/5 bg-line/[0.02] p-4">
+                <p class="text-xs text-ink-6">
+                  Mints a brand-new self-signed Root CA key pair and certificate right here, then
+                  immediately uses it to sign this certificate. The new CA stays available afterward
+                  on the <a href="/certificates/issuers" class="text-hue-sky hover:text-hue-sky-strong">Issuers</a> page to sign others.
+                </p>
+                <div>
+                  <label for="issue-ca-name" class="field-label mb-1 block">CA name</label>
+                  <input id="issue-ca-name" name="ca_name" type="text" placeholder="e.g. Acme Internal CA"
+                         class="field-input w-full px-3 py-2 text-sm">
+                </div>
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label for="issue-ca-common-name" class="field-label mb-1 block">CA common name</label>
+                    <input id="issue-ca-common-name" name="common_name" type="text"
+                           placeholder="Acme Internal Root CA"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-organization" class="field-label mb-1 block">Organization</label>
+                    <input id="issue-ca-organization" name="organization" type="text" placeholder="Acme Corp"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-ou" class="field-label mb-1 block">Organizational unit</label>
+                    <input id="issue-ca-ou" name="organizational_unit" type="text" placeholder="Platform team"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-country" class="field-label mb-1 block">Country</label>
+                    <input id="issue-ca-country" name="country" type="text" maxlength="2" placeholder="ID"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-province" class="field-label mb-1 block">State / province</label>
+                    <input id="issue-ca-province" name="province" type="text" placeholder="Jakarta"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-locality" class="field-label mb-1 block">Locality</label>
+                    <input id="issue-ca-locality" name="locality" type="text" placeholder="Jakarta Selatan"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-email" class="field-label mb-1 block">Email</label>
+                    <input id="issue-ca-email" name="email" type="email" placeholder="ops@example.com"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="issue-ca-valid-days" class="field-label mb-1 block">CA validity (days)</label>
+                    <input id="issue-ca-valid-days" name="ca_valid_days" type="number" min="1" max="7300" value="3650"
+                           class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                </div>
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label for="issue-ca-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
+                    <select id="issue-ca-key-algorithm" name="key_algorithm"
+                            class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="rsa">RSA</option>
+                      <option value="ecdsa">ECDSA</option>
+                    </select>
+                  </div>
+                  <div data-key-rsa>
+                    <label for="issue-ca-key-bits" class="field-label mb-1 block">Key size</label>
+                    <select id="issue-ca-key-bits" name="key_bits"
+                            class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="2048">2048 bit</option>
+                      <option value="3072">3072 bit</option>
+                      <option value="4096" selected>4096 bit</option>
+                    </select>
+                  </div>
+                  <div data-key-ecdsa class="hidden">
+                    <label for="issue-ca-key-curve" class="field-label mb-1 block">Curve</label>
+                    <select id="issue-ca-key-curve" name="key_curve"
+                            class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="P-256">P-256</option>
+                      <option value="P-384">P-384</option>
+                      <option value="P-521">P-521</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <button type="submit" class="btn-secondary px-3 py-1.5 text-sm">
-                Sign with Root CA
+                Issue certificate
               </button>
             </form>
-            {{else}}
-            <p class="mt-2 text-xs text-ink-6">
-              No Root CAs uploaded yet — an admin can add one on the
-              <a href="/certificates/issuers" class="text-hue-sky hover:text-hue-sky-strong">Issuers</a> page.
-            </p>
-            {{end}}
           </div>
         </section>
       {{end}}

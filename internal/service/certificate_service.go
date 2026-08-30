@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/google/uuid"
@@ -47,6 +48,11 @@ type CertificateService struct {
 	warningPercent  int
 	criticalPercent int
 	alerter         Alerter
+	// rotation is the one in-flight (or just-finished, not yet polled to
+	// completion) encryption key rotation this process knows about — see
+	// StartEncryptionKeyRotation. nil means no rotation has ever been
+	// started this process's lifetime.
+	rotation atomic.Pointer[rotationJob]
 }
 
 // CertificateOptions configures the percent-of-lifetime-remaining expiry
@@ -122,14 +128,24 @@ func (s *CertificateService) KeyEncryptionEnabled() bool { return s.currentSeale
 // live sealer this service uses for every future request actually swap;
 // a validation failure or a mid-rotation error leaves the vault exactly as
 // it was, still readable under the old key.
+//
+// This runs synchronously to completion — StartEncryptionKeyRotation below
+// is what the HTTP layer actually calls (v1.7), running this same logic in
+// a goroutine so an admin can watch it progress instead of staring at a
+// frozen button; this method stays exported and usable on its own for
+// anything (a future CLI, a test) that just wants to rotate and block.
 func (s *CertificateService) RotateEncryptionKey(ctx context.Context, newKeyBase64 string) (domain.RotationResult, error) {
+	return s.rotateEncryptionKey(ctx, newKeyBase64, nil)
+}
+
+func (s *CertificateService) rotateEncryptionKey(ctx context.Context, newKeyBase64 string, progress func(done, total int)) (domain.RotationResult, error) {
 	newSealer, err := secret.NewSealer(newKeyBase64)
 	if err != nil {
 		return domain.RotationResult{}, domain.Invalid("encryption_key", err.Error())
 	}
 
 	oldSealer := s.currentSealer()
-	result, err := s.rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, newKeyBase64)
+	result, err := s.rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, newKeyBase64, progress)
 	if err != nil {
 		return domain.RotationResult{}, fmt.Errorf("certificate service: rotate encryption key: %w", err)
 	}
@@ -140,6 +156,126 @@ func (s *CertificateService) RotateEncryptionKey(ctx context.Context, newKeyBase
 		"root_cas_reencrypted", result.RootCAsReencrypted,
 		"encryption_now_enabled", newSealer.Enabled())
 	return result, nil
+}
+
+// rotationJob is a lightweight, in-memory, single-process snapshot of one
+// encryption key rotation in flight — polled by the settings page (v1.7) so
+// an admin can watch real progress rather than stare at a frozen button
+// during what can be a multi-second operation over a large vault. It is
+// never persisted: a rotation started just before a restart simply can't be
+// polled for afterward, an accepted gap for what is already a rare,
+// admin-triggered, single-instance operation with no clustering support
+// elsewhere in this app either.
+type rotationJob struct {
+	id uuid.UUID
+
+	mu       sync.Mutex
+	total    int
+	done     int
+	finished bool
+	result   domain.RotationResult
+	err      error
+	reported bool
+}
+
+func (j *rotationJob) setProgress(done, total int) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.done, j.total = done, total
+}
+
+func (j *rotationJob) finish(result domain.RotationResult, err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.finished = true
+	j.result = result
+	j.err = err
+}
+
+// RotationStatus is a point-in-time snapshot returned to callers polling a
+// rotation's progress — a copy, never the job itself, so a caller can't race
+// with further updates.
+type RotationStatus struct {
+	Total    int
+	Done     int
+	Finished bool
+	Result   domain.RotationResult
+	Err      error
+}
+
+func (j *rotationJob) snapshot() RotationStatus {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return RotationStatus{Total: j.total, Done: j.done, Finished: j.finished, Result: j.result, Err: j.err}
+}
+
+// markReported flips reported to true and reports whether this call was the
+// one that did so — true only the first time, for exactly one caller (one
+// HTTP request) to record the audit entry and build the final flash message,
+// even if a stray extra poll lands after the job already finished.
+func (j *rotationJob) markReported() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.reported {
+		return false
+	}
+	j.reported = true
+	return true
+}
+
+// StartEncryptionKeyRotation validates newKeyBase64 synchronously (so an
+// obviously bad key format fails fast, before any database work) and, on
+// success, launches the actual rotation in the background, returning a job
+// ID immediately for EncryptionKeyRotationStatus to poll. Only one rotation
+// may be in flight at a time — starting a second while one is still running
+// is refused rather than queued or run concurrently, since two rotations
+// racing over the same rows would be exactly the kind of corruption this
+// operation exists to avoid.
+//
+// The rotation itself runs against context.Background(), not the request's
+// context: an admin's browser polling every few hundred milliseconds should
+// never cause the rotation to be cancelled by an unrelated client disconnect
+// or the HTTP handler's own timeout, since a cancelled rotation mid-transaction
+// still has to finish rolling back before the row locks release either way.
+func (s *CertificateService) StartEncryptionKeyRotation(newKeyBase64 string) (uuid.UUID, error) {
+	if _, err := secret.NewSealer(newKeyBase64); err != nil {
+		return uuid.Nil, domain.Invalid("encryption_key", err.Error())
+	}
+	if existing := s.rotation.Load(); existing != nil && !existing.snapshot().Finished {
+		return uuid.Nil, domain.Invalid("encryption_key", "a rotation is already in progress — wait for it to finish before starting another")
+	}
+
+	job := &rotationJob{id: uuid.New()}
+	s.rotation.Store(job)
+
+	go func() {
+		result, err := s.rotateEncryptionKey(context.Background(), newKeyBase64, job.setProgress)
+		job.finish(result, err)
+	}()
+
+	return job.id, nil
+}
+
+// EncryptionKeyRotationStatus returns the current snapshot of the rotation
+// identified by id — ok is false if id doesn't match the one rotation this
+// process currently knows about (a bad/stale ID, or the process restarted).
+func (s *CertificateService) EncryptionKeyRotationStatus(id uuid.UUID) (RotationStatus, bool) {
+	job := s.rotation.Load()
+	if job == nil || job.id != id {
+		return RotationStatus{}, false
+	}
+	return job.snapshot(), true
+}
+
+// MarkRotationReported is EncryptionKeyRotationStatus's companion for the
+// one caller that should record the audit entry and success/error flash for
+// a finished rotation — see rotationJob.markReported.
+func (s *CertificateService) MarkRotationReported(id uuid.UUID) bool {
+	job := s.rotation.Load()
+	if job == nil || job.id != id {
+		return false
+	}
+	return job.markReported()
 }
 
 // CreateCSRInput is the form payload for generating a new signing request.
@@ -643,6 +779,83 @@ func (s *CertificateService) UploadRootCA(ctx context.Context, name, certPEM, ke
 		return nil, err
 	}
 	return record, nil
+}
+
+// GenerateRootCA mints a brand-new self-signed Root CA key pair and
+// certificate entirely in-app — the generate-it-yourself counterpart to
+// UploadRootCA, for an admin who doesn't already hold a CA to paste in.
+// Reuses certutil.GenerateRootCA for the actual key/certificate minting,
+// then persists it through exactly the same path UploadRootCA does (seal
+// the key, capture the same display fields, s.rootCAs.Create) — the two
+// only differ in how the certificate/key material comes into existence,
+// never in how it's stored afterward.
+func (s *CertificateService) GenerateRootCA(ctx context.Context, name string, subject certutil.Subject, spec certutil.KeySpec, validDays int) (*domain.RootCA, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, domain.Invalid("name", "a name is required")
+	}
+	cert, certPEM, key, err := certutil.GenerateRootCA(subject, spec, validDays)
+	if err != nil {
+		return nil, domain.Invalid("subject", err.Error())
+	}
+	keyPEM, err := certutil.EncodePrivateKeyPEM(key)
+	if err != nil {
+		return nil, fmt.Errorf("certificate service: encode generated root ca key: %w", err)
+	}
+	stored, err := s.currentSealer().Seal(keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("certificate service: seal root ca key: %w", err)
+	}
+	notBefore, notAfter := cert.NotBefore.UTC(), cert.NotAfter.UTC()
+	pkAlg, pkBits := certutil.DescribePublicKey(cert.PublicKey)
+	sum := sha256.Sum256(cert.Raw)
+	record := &domain.RootCA{
+		Name:                name,
+		CertificatePEM:      certPEM,
+		PrivateKeyPEM:       stored,
+		PrivateKeyEncrypted: s.currentSealer().Enabled(),
+		Subject:             cert.Subject.String(),
+		SignatureAlgorithm:  cert.SignatureAlgorithm.String(),
+		PublicKeyAlgorithm:  pkAlg,
+		KeySize:             pkBits,
+		FingerprintSHA256:   fmt.Sprintf("%x", sum),
+		NotBefore:           &notBefore,
+		NotAfter:            &notAfter,
+	}
+	if err := s.rootCAs.Create(ctx, record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// GenerateRootCAAndSign mints a brand-new Root CA and immediately signs the
+// given pending certificate with it, in one action (v1.9) — the "create a
+// new CA" option in the pending-certificate signing UI, for an admin who
+// doesn't already hold a Root CA and would rather not leave the certificate
+// detail page to go generate one on the Issuers page first, then come back.
+// It is deliberately just GenerateRootCA followed by SignWithRootCA with no
+// new crypto logic of its own, and no shared transaction: each method's own
+// validation/persistence behaves exactly as it already does for its other
+// callers (the Issuers page, BulkRenewInternal, ApproveInternal). If
+// signing fails after the CA was already created — e.g. the certificate's
+// own stored CSR is unreadable — the freshly generated CA is still valid
+// and is deliberately left in place rather than rolled back: it's a
+// low-stakes, easily-retried failure (sign again from the Issuers page, or
+// just resubmit), unlike encryption-key rotation's all-or-nothing
+// multi-row transaction where a partial result would be actively
+// dangerous. The caller can tell the two failure points apart because ca
+// is non-nil as soon as generation succeeds, regardless of what happens
+// next.
+func (s *CertificateService) GenerateRootCAAndSign(ctx context.Context, id uuid.UUID, caName string, subject certutil.Subject, spec certutil.KeySpec, caValidDays, certDays int) (ca *domain.RootCA, cert *domain.Certificate, err error) {
+	ca, err = s.GenerateRootCA(ctx, caName, subject, spec, caValidDays)
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err = s.SignWithRootCA(ctx, id, ca.ID, certDays)
+	if err != nil {
+		return ca, nil, err
+	}
+	return ca, cert, nil
 }
 
 // ListRootCAs returns every uploaded Root CA, newest first.

@@ -27,13 +27,13 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 
 var _ domain.UserRepository = (*UserRepository)(nil)
 
-const userColumns = `id, email, password_hash, role, totp_secret, mfa_enabled,
+const userColumns = `id, email, password_hash, role, auth_source, totp_secret, mfa_enabled,
 	must_change_password, created_at, updated_at, last_login_at`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	if err := row.Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.TOTPSecret, &u.MFAEnabled,
+		&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.AuthSource, &u.TOTPSecret, &u.MFAEnabled,
 		&u.MustChangePassword, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt,
 	); err != nil {
 		return nil, err
@@ -43,10 +43,10 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 
 // CreateUser inserts a new account.
 func (r *UserRepository) CreateUser(ctx context.Context, u *domain.User) error {
-	const q = `INSERT INTO users (email, password_hash, role, totp_secret, mfa_enabled, must_change_password)
-		VALUES ($1, $2, $3, $4, $5, $6)
+	const q = `INSERT INTO users (email, password_hash, role, auth_source, totp_secret, mfa_enabled, must_change_password)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at`
-	err := r.pool.QueryRow(ctx, q, u.Email, u.PasswordHash, u.Role, u.TOTPSecret, u.MFAEnabled, u.MustChangePassword).
+	err := r.pool.QueryRow(ctx, q, u.Email, u.PasswordHash, u.Role, u.AuthSource, u.TOTPSecret, u.MFAEnabled, u.MustChangePassword).
 		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -60,11 +60,11 @@ func (r *UserRepository) CreateUser(ctx context.Context, u *domain.User) error {
 
 // UpdateUser persists changes to an existing account.
 func (r *UserRepository) UpdateUser(ctx context.Context, u *domain.User) error {
-	const q = `UPDATE users SET email = $1, password_hash = $2, role = $3, totp_secret = $4,
-		mfa_enabled = $5, must_change_password = $6, last_login_at = $7, updated_at = now()
-		WHERE id = $8
+	const q = `UPDATE users SET email = $1, password_hash = $2, role = $3, auth_source = $4, totp_secret = $5,
+		mfa_enabled = $6, must_change_password = $7, last_login_at = $8, updated_at = now()
+		WHERE id = $9
 		RETURNING updated_at`
-	err := r.pool.QueryRow(ctx, q, u.Email, u.PasswordHash, u.Role, u.TOTPSecret,
+	err := r.pool.QueryRow(ctx, q, u.Email, u.PasswordHash, u.Role, u.AuthSource, u.TOTPSecret,
 		u.MFAEnabled, u.MustChangePassword, u.LastLoginAt, u.ID).Scan(&u.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

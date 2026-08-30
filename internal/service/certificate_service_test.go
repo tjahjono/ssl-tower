@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -105,17 +107,31 @@ func (f *fakeRootCARepo) List(_ context.Context) ([]*domain.RootCA, error) {
 // fakeEncryptionRotationRepository is a stand-in for
 // domain.EncryptionRotationRepository. Most tests in this file never touch
 // RotateEncryptionKey, so it just counts calls and returns whatever result/
-// err it's configured with — see certificate_service_rotation_test.go for
-// one that actually exercises the rotation path against fakeCertificateRepo/
-// fakeRootCARepo directly.
+// err it's configured with. When total > 0 it also calls progress once per
+// simulated row (0, total) then (1, total)...(total, total) — real enough to
+// exercise CertificateService's job-tracking/polling plumbing (v1.6) without
+// a real database.
 type fakeEncryptionRotationRepository struct {
 	result domain.RotationResult
 	err    error
+	total  int
 	calls  int
+	// block, when non-nil, is received from before returning — lets a test
+	// hold a rotation "in flight" for as long as it wants, deterministically,
+	// instead of racing a fast/instant fake call against a concurrency check.
+	block chan struct{}
 }
 
-func (f *fakeEncryptionRotationRepository) RotateEncryptionKey(_ context.Context, _, _ *secret.Sealer, _ string) (domain.RotationResult, error) {
+func (f *fakeEncryptionRotationRepository) RotateEncryptionKey(_ context.Context, _, _ *secret.Sealer, _ string, progress func(done, total int)) (domain.RotationResult, error) {
 	f.calls++
+	if progress != nil && f.total > 0 {
+		for done := 0; done <= f.total; done++ {
+			progress(done, f.total)
+		}
+	}
+	if f.block != nil {
+		<-f.block
+	}
 	return f.result, f.err
 }
 
@@ -132,6 +148,133 @@ func newTestCertificateService(t *testing.T) *CertificateService {
 	// healthy regardless of how close to expiry it actually is.
 	settings := newTestSettingsService(domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1})
 	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), &fakeEncryptionRotationRepository{}, sealer, settings, discardLogger(), CertificateOptions{})
+}
+
+func TestStartEncryptionKeyRotationReportsProgressToCompletion(t *testing.T) {
+	rotationRepo := &fakeEncryptionRotationRepository{
+		result: domain.RotationResult{CertificatesReencrypted: 3, RootCAsReencrypted: 1},
+		total:  4,
+	}
+	sealer, err := secret.NewSealer("")
+	if err != nil {
+		t.Fatalf("NewSealer: %v", err)
+	}
+	settings := newTestSettingsService(domain.AppSettings{})
+	svc := NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), rotationRepo, sealer, settings, discardLogger(), CertificateOptions{})
+
+	id, err := svc.StartEncryptionKeyRotation("")
+	if err != nil {
+		t.Fatalf("StartEncryptionKeyRotation: %v", err)
+	}
+
+	// Poll until the fake repo's goroutine finishes — it runs synchronously
+	// fast, but this is still a real goroutine hand-off, so poll rather than
+	// assume it's done by the time StartEncryptionKeyRotation returns.
+	deadline := time.Now().Add(2 * time.Second)
+	var status RotationStatus
+	for time.Now().Before(deadline) {
+		var ok bool
+		status, ok = svc.EncryptionKeyRotationStatus(id)
+		if !ok {
+			t.Fatalf("EncryptionKeyRotationStatus(%s) = not found, want the job just started", id)
+		}
+		if status.Finished {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !status.Finished {
+		t.Fatal("rotation did not finish within the test deadline")
+	}
+	if status.Err != nil {
+		t.Fatalf("status.Err = %v, want nil", status.Err)
+	}
+	if status.Result.CertificatesReencrypted != 3 || status.Result.RootCAsReencrypted != 1 {
+		t.Fatalf("status.Result = %+v, want {3 1}", status.Result)
+	}
+	if status.Done != status.Total || status.Total != 4 {
+		t.Fatalf("status Done/Total = %d/%d, want 4/4 once finished", status.Done, status.Total)
+	}
+
+	if rotationRepo.calls != 1 {
+		t.Fatalf("expected exactly one RotateEncryptionKey call, got %d", rotationRepo.calls)
+	}
+
+	// MarkRotationReported must return true exactly once, for the one HTTP
+	// request that gets to record the audit entry.
+	if !svc.MarkRotationReported(id) {
+		t.Fatal("expected the first MarkRotationReported call to return true")
+	}
+	if svc.MarkRotationReported(id) {
+		t.Fatal("expected a second MarkRotationReported call to return false")
+	}
+
+	// A random/stale ID must never be mistaken for the real job.
+	if _, ok := svc.EncryptionKeyRotationStatus(uuid.New()); ok {
+		t.Fatal("expected EncryptionKeyRotationStatus for an unrelated ID to report not found")
+	}
+}
+
+func TestStartEncryptionKeyRotationRejectsBadKeyBeforeStarting(t *testing.T) {
+	rotationRepo := &fakeEncryptionRotationRepository{}
+	sealer, err := secret.NewSealer("")
+	if err != nil {
+		t.Fatalf("NewSealer: %v", err)
+	}
+	settings := newTestSettingsService(domain.AppSettings{})
+	svc := NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), rotationRepo, sealer, settings, discardLogger(), CertificateOptions{})
+
+	if _, err := svc.StartEncryptionKeyRotation("not-valid-base64-key"); err == nil {
+		t.Fatal("expected an error for a malformed encryption key")
+	}
+	if rotationRepo.calls != 0 {
+		t.Fatalf("expected no rotation attempt for a key that fails validation, got %d calls", rotationRepo.calls)
+	}
+}
+
+func TestStartEncryptionKeyRotationRefusesConcurrentRotation(t *testing.T) {
+	rotationRepo := &fakeEncryptionRotationRepository{block: make(chan struct{})}
+	sealer, err := secret.NewSealer("")
+	if err != nil {
+		t.Fatalf("NewSealer: %v", err)
+	}
+	settings := newTestSettingsService(domain.AppSettings{})
+	svc := NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), rotationRepo, sealer, settings, discardLogger(), CertificateOptions{})
+
+	firstID, err := svc.StartEncryptionKeyRotation("")
+	if err != nil {
+		t.Fatalf("first StartEncryptionKeyRotation: %v", err)
+	}
+
+	// The fake repo is blocked inside its call right now (waiting on
+	// rotationRepo.block), so the first job cannot have finished yet — a
+	// second Start must be refused deterministically, not just "usually".
+	if _, err := svc.StartEncryptionKeyRotation("another-key"); err == nil {
+		t.Fatal("expected a second rotation to be refused while the first is still running")
+	}
+
+	close(rotationRepo.block)
+	deadline := time.Now().Add(2 * time.Second)
+	var status RotationStatus
+	for time.Now().Before(deadline) {
+		var ok bool
+		status, ok = svc.EncryptionKeyRotationStatus(firstID)
+		if !ok {
+			t.Fatalf("EncryptionKeyRotationStatus(%s) = not found", firstID)
+		}
+		if status.Finished {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !status.Finished {
+		t.Fatal("first rotation did not finish within the test deadline")
+	}
+
+	// Now that the first has finished, a new rotation must be accepted.
+	if _, err := svc.StartEncryptionKeyRotation(""); err != nil {
+		t.Fatalf("expected a rotation to be accepted once the previous one finished, got %v", err)
+	}
 }
 
 func TestImportCSRStoresSubjectSANsAndRequestedEKU(t *testing.T) {
@@ -413,6 +556,153 @@ func TestUploadRootCARejectsNonCACertificate(t *testing.T) {
 
 	if _, err := svc.UploadRootCA(context.Background(), "Not actually a CA", signed.CertificatePEM, keyPEM); err == nil {
 		t.Fatal("expected an error uploading a non-CA certificate as a Root CA")
+	}
+}
+
+func TestGenerateRootCAPersistsAndCanSign(t *testing.T) {
+	svc := newTestCertificateService(t)
+	ca, err := svc.GenerateRootCA(context.Background(), "Acme Generated CA",
+		certutil.Subject{CommonName: "Acme Generated Root CA", Organization: "Acme Corp"},
+		certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048}, 3650)
+	if err != nil {
+		t.Fatalf("GenerateRootCA: %v", err)
+	}
+	if ca.Name != "Acme Generated CA" {
+		t.Errorf("Name = %q, want %q", ca.Name, "Acme Generated CA")
+	}
+	if !strings.Contains(ca.CertificatePEM, "BEGIN CERTIFICATE") {
+		t.Error("CertificatePEM is not PEM encoded")
+	}
+	if ca.FingerprintSHA256 == "" {
+		t.Error("expected a computed fingerprint")
+	}
+	if ca.PublicKeyAlgorithm != "RSA" || ca.KeySize != 2048 {
+		t.Errorf("PublicKeyAlgorithm/KeySize = %s/%d, want RSA/2048", ca.PublicKeyAlgorithm, ca.KeySize)
+	}
+
+	// The generated CA must actually be usable to sign a pending CSR, the
+	// same as an uploaded one — proves the persisted (sealed, then reopened)
+	// key round-trips correctly.
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "internal.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	signed, err := svc.SignWithRootCA(context.Background(), pending.ID, ca.ID, 30)
+	if err != nil {
+		t.Fatalf("SignWithRootCA using a generated CA: %v", err)
+	}
+	if signed.SignedByRootCAID == nil || *signed.SignedByRootCAID != ca.ID {
+		t.Fatalf("SignedByRootCAID = %v, want %v", signed.SignedByRootCAID, ca.ID)
+	}
+}
+
+func TestGenerateRootCARejectsMissingName(t *testing.T) {
+	svc := newTestCertificateService(t)
+	_, err := svc.GenerateRootCA(context.Background(), "  ",
+		certutil.Subject{CommonName: "Acme Generated Root CA"},
+		certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048}, 3650)
+	if err == nil {
+		t.Fatal("expected an error generating a root CA with no name")
+	}
+}
+
+func TestGenerateRootCARejectsMissingCommonName(t *testing.T) {
+	svc := newTestCertificateService(t)
+	_, err := svc.GenerateRootCA(context.Background(), "Acme Generated CA",
+		certutil.Subject{}, certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048}, 3650)
+	if err == nil {
+		t.Fatal("expected an error generating a root CA with no common name")
+	}
+}
+
+// TestGenerateRootCAAndSignIssuesCertificateWithNewCA is the direct
+// regression test for v1.9's "create a new CA" option in the
+// pending-certificate signing dropdown: one call both mints a Root CA and
+// signs the pending certificate with it.
+func TestGenerateRootCAAndSignIssuesCertificateWithNewCA(t *testing.T) {
+	svc := newTestCertificateService(t)
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "inline-ca.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+
+	ca, signed, err := svc.GenerateRootCAAndSign(context.Background(), pending.ID, "Inline Generated CA",
+		certutil.Subject{CommonName: "Inline Generated Root CA", Organization: "Acme Corp"},
+		certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048}, 3650, 30)
+	if err != nil {
+		t.Fatalf("GenerateRootCAAndSign: %v", err)
+	}
+	if ca == nil || ca.Name != "Inline Generated CA" {
+		t.Fatalf("expected the new CA to be returned, got %+v", ca)
+	}
+	if signed == nil {
+		t.Fatal("expected the signed certificate to be returned")
+	}
+	if signed.SelfSigned {
+		t.Error("a certificate signed by a generated CA must not be marked SelfSigned")
+	}
+	if signed.SignedByRootCAID == nil || *signed.SignedByRootCAID != ca.ID {
+		t.Fatalf("SignedByRootCAID = %v, want %v", signed.SignedByRootCAID, ca.ID)
+	}
+	if got := signed.TrustClass(); got != domain.TrustInternal {
+		t.Fatalf("TrustClass() = %q, want %q", got, domain.TrustInternal)
+	}
+
+	// The generated CA must also be independently usable afterward, exactly
+	// like one generated from the Issuers page — proves this didn't create
+	// some special, less-capable CA record.
+	listed, err := svc.ListRootCAs(context.Background())
+	if err != nil {
+		t.Fatalf("ListRootCAs: %v", err)
+	}
+	found := false
+	for _, c := range listed {
+		if c.ID == ca.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the generated CA to appear in ListRootCAs")
+	}
+}
+
+// TestGenerateRootCAAndSignLeavesCAInPlaceWhenSigningFails covers the
+// documented "two separate writes, not one transaction" design: if signing
+// fails after the CA already exists, the CA is still returned (non-nil) and
+// still persisted rather than being rolled back.
+func TestGenerateRootCAAndSignLeavesCAInPlaceWhenSigningFails(t *testing.T) {
+	svc := newTestCertificateService(t)
+	missingID := uuid.New() // no pending certificate with this ID exists
+
+	ca, signed, err := svc.GenerateRootCAAndSign(context.Background(), missingID, "Orphan-safe CA",
+		certutil.Subject{CommonName: "Orphan-safe Root CA"},
+		certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048}, 3650, 30)
+	if err == nil {
+		t.Fatal("expected an error signing a nonexistent certificate")
+	}
+	if signed != nil {
+		t.Fatalf("expected no signed certificate on failure, got %+v", signed)
+	}
+	if ca == nil {
+		t.Fatal("expected the generated CA to still be returned even though signing failed")
+	}
+
+	listed, err := svc.ListRootCAs(context.Background())
+	if err != nil {
+		t.Fatalf("ListRootCAs: %v", err)
+	}
+	found := false
+	for _, c := range listed {
+		if c.ID == ca.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the generated CA to remain persisted despite the failed sign")
 	}
 }
 

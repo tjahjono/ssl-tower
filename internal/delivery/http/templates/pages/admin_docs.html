@@ -98,9 +98,9 @@
       </div>
 
       <div>
-        <h3 class="mb-1 text-sm font-medium text-ink-1">Self-sign a pending CSR</h3>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Issue a pending CSR (self-sign, an existing Root CA, or a brand-new one)</h3>
         <p class="text-sm text-ink-3">
-          <span class="font-mono text-xs">POST /certificates/{id}/self-sign</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateSelfSign</span> → <span class="font-mono text-xs">CertificateService.SelfSign</span> re-parses the stored CSR and key, calls <span class="font-mono text-xs">certutil.SelfSign</span> (issuer == subject, honours the record's stored EKU), then the same <span class="font-mono text-xs">applyIssuedCert</span> path as Attach.
+          <span class="font-mono text-xs">POST /certificates/{id}/issue</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateIssue</span> — one endpoint for the pending-certificate detail page's single "Sign with" dropdown (v1.9; previously two separate forms/endpoints side by side). <span class="font-mono text-xs">sign_action</span> selects the path: empty or <span class="font-mono text-xs">"self"</span> calls <span class="font-mono text-xs">CertificateService.SelfSign</span>, which re-parses the stored CSR and key, calls <span class="font-mono text-xs">certutil.SelfSign</span> (issuer == subject, honours the record's stored EKU), then the same <span class="font-mono text-xs">applyIssuedCert</span> path as Attach; an existing Root CA's UUID calls <span class="font-mono text-xs">CertificateService.SignWithRootCA</span> the same way; <span class="font-mono text-xs">"new"</span> calls <span class="font-mono text-xs">CertificateService.GenerateRootCAAndSign</span>, which mints a brand-new Root CA from the request's CA-subject/key fields (the same <span class="font-mono text-xs">certutil.GenerateRootCA</span> the Issuers page's "Generate a Root CA" uses) and immediately signs with it — the new CA is left in place afterward even if signing somehow then fails, since it's still a perfectly valid CA available from the Issuers page.
         </p>
       </div>
 

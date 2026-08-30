@@ -10,6 +10,7 @@ import (
 	"github.com/pquerna/otp/totp"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/ldapauth"
 )
 
 // fakeUserRepo is an in-memory stand-in for domain.UserRepository. It stores
@@ -496,6 +497,277 @@ func TestCannotDeleteOrDemoteLastAdmin(t *testing.T) {
 	mustCreateUser(t, auth, ctx, "admin2@example.com", "correct-horse", domain.RoleAdmin)
 	if err := auth.UpdateRole(ctx, admin.ID, domain.RoleViewer); err != nil {
 		t.Fatalf("expected demotion to succeed with another admin present, got %v", err)
+	}
+}
+
+// fakeLDAPClient is an in-memory stand-in for ldapauth.Client — no network,
+// no real directory. LDAPClient itself is exercised against a real slapd
+// instance instead (see internal/pkg/ldapauth's live tests); this fake lets
+// AuthService's LDAP branching logic be tested in isolation, exactly like
+// fakeUserRepo isolates it from a real database.
+type fakeLDAPClient struct {
+	// directory maps a lowercased email to the account a real directory
+	// would hold for it. A missing entry means "no such user in LDAP."
+	directory map[string]fakeLDAPEntry
+}
+
+type fakeLDAPEntry struct {
+	password string
+	dn       string
+	groups   []string
+}
+
+func newFakeLDAPClient() *fakeLDAPClient {
+	return &fakeLDAPClient{directory: map[string]fakeLDAPEntry{}}
+}
+
+func (f *fakeLDAPClient) add(email, password string, groups ...string) {
+	f.directory[strings.ToLower(email)] = fakeLDAPEntry{
+		password: password,
+		dn:       "uid=" + email + ",ou=people,dc=example,dc=com",
+		groups:   groups,
+	}
+}
+
+func (f *fakeLDAPClient) Authenticate(_ context.Context, email, password string) (*ldapauth.AuthResult, error) {
+	e, ok := f.directory[strings.ToLower(email)]
+	if !ok || e.password != password {
+		return nil, ldapauth.ErrInvalidCredentials
+	}
+	return &ldapauth.AuthResult{DN: e.dn, Groups: e.groups}, nil
+}
+
+const (
+	editorGroupDN    = "cn=sslgen-editors,ou=groups,dc=example,dc=com"
+	viewerGroupDN    = "cn=sslgen-viewers,ou=groups,dc=example,dc=com"
+	requesterGroupDN = "cn=sslgen-requesters,ou=groups,dc=example,dc=com"
+)
+
+// newTestAuthServiceWithLDAP builds an AuthService with LDAP "configured"
+// via a settings snapshot (v1.8 moved LDAP config from a static AuthOptions
+// field to the portal-editable SettingsService) whose LDAPClientFactory
+// ignores the ldapauth.Config it's given and always returns the fake client
+// passed in — the fake doesn't care about the config fields, it just needs
+// to be the client AuthService actually calls.
+func newTestAuthServiceWithLDAP(repo domain.UserRepository, ldap ldapauth.Client) *AuthService {
+	settings := newTestSettingsService(domain.AppSettings{
+		LDAPURL:              "ldap://fake.example.com:389",
+		LDAPRoleMapEditor:    []string{editorGroupDN},
+		LDAPRoleMapViewer:    []string{viewerGroupDN},
+		LDAPRoleMapRequester: []string{requesterGroupDN},
+	})
+	return NewAuthService(repo, discardLogger(), AuthOptions{
+		SessionSecret:     "test-secret-do-not-use-in-prod",
+		Settings:          settings,
+		LDAPClientFactory: func(ldapauth.Config) ldapauth.Client { return ldap },
+	})
+}
+
+func TestLDAPLoginJITProvisionsNewAccount(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("newhire@example.com", "hunter2", editorGroupDN)
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+
+	if _, err := repo.GetUserByEmail(ctx, "newhire@example.com"); err == nil {
+		t.Fatal("test setup: account must not exist yet")
+	}
+
+	step, err := auth.Login(ctx, "newhire@example.com", "hunter2", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("expected LDAP login to JIT-provision and succeed, got %v", err)
+	}
+	if step.Session == nil {
+		t.Fatalf("expected an immediate session (MFA not yet enrolled), got %+v", step)
+	}
+
+	created, err := repo.GetUserByEmail(ctx, "newhire@example.com")
+	if err != nil {
+		t.Fatalf("expected a local account to have been provisioned: %v", err)
+	}
+	if created.AuthSource != domain.AuthSourceLDAP {
+		t.Fatalf("expected AuthSourceLDAP, got %q", created.AuthSource)
+	}
+	if created.Role != domain.RoleEditor {
+		t.Fatalf("expected role editor from the group mapping, got %q", created.Role)
+	}
+}
+
+func TestLDAPLoginDeniesUnmappedGroups(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("nogroup@example.com", "hunter2", "cn=some-other-group,ou=groups,dc=example,dc=com")
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+
+	if _, err := auth.Login(ctx, "nogroup@example.com", "hunter2", "127.0.0.1"); err != domain.ErrUnauthorized {
+		t.Fatalf("expected fail-closed denial for an unmapped group, got %v", err)
+	}
+	if _, err := repo.GetUserByEmail(ctx, "nogroup@example.com"); err == nil {
+		t.Fatal("expected no account to be provisioned for a denied login")
+	}
+}
+
+func TestLDAPLoginWrongPasswordFails(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("someone@example.com", "hunter2", editorGroupDN)
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+
+	if _, err := auth.Login(ctx, "someone@example.com", "wrong", "127.0.0.1"); err != domain.ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized for a bad LDAP password, got %v", err)
+	}
+}
+
+func TestLDAPLoginResyncsRoleOnGroupChange(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("promoted@example.com", "hunter2", viewerGroupDN)
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+
+	if _, err := auth.Login(ctx, "promoted@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("first login failed: %v", err)
+	}
+	first, _ := repo.GetUserByEmail(ctx, "promoted@example.com")
+	if first.Role != domain.RoleViewer {
+		t.Fatalf("expected initial role viewer, got %q", first.Role)
+	}
+
+	// The directory now reflects a promotion to the editors group — LDAP is
+	// the standing source of truth, so the very next login must re-sync the
+	// role rather than keeping whatever was JIT-provisioned the first time.
+	ldap.add("promoted@example.com", "hunter2", editorGroupDN)
+	if _, err := auth.Login(ctx, "promoted@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("second login failed: %v", err)
+	}
+	second, _ := repo.GetUserByEmail(ctx, "promoted@example.com")
+	if second.Role != domain.RoleEditor {
+		t.Fatalf("expected role to be re-synced to editor, got %q", second.Role)
+	}
+	if second.ID != first.ID {
+		t.Fatal("expected the same account to be updated, not a second one created")
+	}
+}
+
+// TestLDAPLoginUsesLiveSettingsWithoutReconstructingAuthService is the
+// direct regression test for v1.8's headline claim: a portal edit to LDAP
+// settings takes effect on the very next login, with no restart and no
+// rebuilding of AuthService itself. It mutates the same SettingsService's
+// live snapshot in place between two Login calls on one AuthService
+// instance — exactly what a real admin's /settings save does under the
+// hood (SettingsService.Update ends with Reload swapping the
+// atomic.Pointer) — rather than constructing a second AuthService with
+// different settings, which would prove nothing about "live."
+func TestLDAPLoginUsesLiveSettingsWithoutReconstructingAuthService(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("carol@example.com", "hunter2", viewerGroupDN)
+	settings := newTestSettingsService(domain.AppSettings{
+		LDAPURL:           "ldap://fake.example.com:389",
+		LDAPRoleMapEditor: []string{editorGroupDN},
+		LDAPRoleMapViewer: []string{viewerGroupDN},
+	})
+	auth := NewAuthService(repo, discardLogger(), AuthOptions{
+		SessionSecret:     "test-secret-do-not-use-in-prod",
+		Settings:          settings,
+		LDAPClientFactory: func(ldapauth.Config) ldapauth.Client { return ldap },
+	})
+	ctx := context.Background()
+
+	if _, err := auth.Login(ctx, "carol@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("first login failed: %v", err)
+	}
+	first, _ := repo.GetUserByEmail(ctx, "carol@example.com")
+	if first.Role != domain.RoleViewer {
+		t.Fatalf("expected initial role viewer from the original settings, got %q", first.Role)
+	}
+
+	// Simulate a live admin edit on /settings: move carol's group from the
+	// viewer mapping to the editor mapping, and swap the live snapshot the
+	// same way SettingsService.Update/Reload does — without touching auth
+	// or settings' construction at all.
+	settings.current.Store(&domain.AppSettings{
+		LDAPURL:           "ldap://fake.example.com:389",
+		LDAPRoleMapEditor: []string{viewerGroupDN},
+	})
+
+	if _, err := auth.Login(ctx, "carol@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("second login failed: %v", err)
+	}
+	second, _ := repo.GetUserByEmail(ctx, "carol@example.com")
+	if second.Role != domain.RoleEditor {
+		t.Fatalf("expected the live settings edit to take effect immediately (role editor), got %q", second.Role)
+	}
+}
+
+func TestLDAPConfiguredAdminStillUsesLocalPassword(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient() // deliberately has no entry for the admin at all
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+	mustCreateUser(t, auth, ctx, "admin@example.com", "correct-horse", domain.RoleAdmin)
+
+	step, err := auth.Login(ctx, "admin@example.com", "correct-horse", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("expected the admin account to still authenticate locally even with LDAP configured, got %v", err)
+	}
+	if step.Session == nil {
+		t.Fatalf("expected an immediate session, got %+v", step)
+	}
+}
+
+func TestLDAPConfiguredNonAdminLocalPasswordStopsWorking(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient() // no matching LDAP entry either
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+	// A pre-existing local editor account, created before LDAP was ever
+	// configured (mustCreateUser uses AuthSourceLocal via CreateUser).
+	mustCreateUser(t, auth, ctx, "editor@example.com", "correct-horse", domain.RoleEditor)
+
+	if _, err := auth.Login(ctx, "editor@example.com", "correct-horse", "127.0.0.1"); err != domain.ErrUnauthorized {
+		t.Fatalf("expected local password login to stop working for a non-admin once LDAP is configured, got %v", err)
+	}
+}
+
+func TestUpdateRoleRefusesPromotingLDAPAccountToAdmin(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("ldapuser@example.com", "hunter2", editorGroupDN)
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+	if _, err := auth.Login(ctx, "ldapuser@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("provisioning login failed: %v", err)
+	}
+	u, err := repo.GetUserByEmail(ctx, "ldapuser@example.com")
+	if err != nil {
+		t.Fatalf("expected provisioned account: %v", err)
+	}
+
+	if err := auth.UpdateRole(ctx, u.ID, domain.RoleAdmin); err == nil {
+		t.Fatal("expected promoting an LDAP-sourced account to admin to be refused")
+	}
+}
+
+func TestResetPasswordRefusesForLDAPAccount(t *testing.T) {
+	repo := newFakeUserRepo()
+	ldap := newFakeLDAPClient()
+	ldap.add("ldapuser@example.com", "hunter2", editorGroupDN)
+	auth := newTestAuthServiceWithLDAP(repo, ldap)
+	ctx := context.Background()
+	if _, err := auth.Login(ctx, "ldapuser@example.com", "hunter2", "127.0.0.1"); err != nil {
+		t.Fatalf("provisioning login failed: %v", err)
+	}
+	u, err := repo.GetUserByEmail(ctx, "ldapuser@example.com")
+	if err != nil {
+		t.Fatalf("expected provisioned account: %v", err)
+	}
+
+	if err := auth.ResetPassword(ctx, u.ID, "irrelevant12345"); err == nil {
+		t.Fatal("expected resetting an LDAP account's password to be refused")
 	}
 }
 

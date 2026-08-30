@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/authcrypto"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/ldapauth"
 )
 
 const (
@@ -45,6 +47,43 @@ type AuthOptions struct {
 	LockoutWindow     time.Duration
 	// Issuer is the label shown in an authenticator app next to the account.
 	Issuer string
+	// Settings supplies live LDAP configuration (v1.8: portal-editable, see
+	// CLAUDE.md's v1.8 locked decision) — AuthService rebuilds an
+	// ldapauth.Client fresh from Settings.Current() on every login attempt
+	// rather than caching one at construction time, the same "cheap,
+	// stateless, always current" pattern SettingsService.EmailNotifier/
+	// TeamsNotifier already use for SMTP/Teams. An empty
+	// Settings.Current().LDAPURL means LDAP is off — every login goes
+	// through the local password/MFA path exactly as before this feature
+	// existed, matching the "empty = off" convention every other optional
+	// integration in this app already follows. See CLAUDE.md's LDAP locked
+	// decisions for why this is deliberately not a per-role toggle: an
+	// admin account always authenticates locally regardless of this
+	// setting, and every other role always authenticates via LDAP once
+	// it's set, never a mix chosen per account. Nil disables LDAP
+	// permanently regardless of settings — used by tests that never touch
+	// it.
+	Settings *SettingsService
+	// LDAPClientFactory builds the LDAP client from a live config —
+	// ldapauth.NewLDAPClient does no I/O itself, so rebuilding on every
+	// login attempt is cheap, the same property EmailNotifier/TeamsNotifier
+	// rely on. Swapped out in tests for one that returns a fake client
+	// regardless of the config passed in. Defaults to ldapauth.NewLDAPClient
+	// if left nil.
+	LDAPClientFactory func(ldapauth.Config) ldapauth.Client
+}
+
+// LDAPRoleMapping lists, for each non-admin role, the LDAP group DNs whose
+// members should hold that role. Checked in Editor, Viewer, Requester
+// order — the most privileged matching group wins when an entry belongs to
+// more than one mapped group. Deliberately has no Admin field: admin is
+// always locally-granted, see AuthService.UpdateRole. An account whose
+// groups match none of these is denied login and logged, not silently
+// provisioned at a default role.
+type LDAPRoleMapping struct {
+	Editor    []string
+	Viewer    []string
+	Requester []string
 }
 
 // AuthService implements accounts, sessions, and TOTP-based MFA.
@@ -71,7 +110,45 @@ func NewAuthService(repo domain.UserRepository, log *slog.Logger, opts AuthOptio
 	if opts.Issuer == "" {
 		opts.Issuer = "SSL Tower"
 	}
+	if opts.LDAPClientFactory == nil {
+		// ldapauth.NewLDAPClient returns a concrete *ldapauth.LDAPClient, not
+		// the ldapauth.Client interface, so it needs this thin wrapper to
+		// satisfy the factory's signature.
+		opts.LDAPClientFactory = func(cfg ldapauth.Config) ldapauth.Client { return ldapauth.NewLDAPClient(cfg) }
+	}
 	return &AuthService{repo: repo, log: log, opts: opts}
+}
+
+// ldapConfigured reads the live LDAP settings and reports whether LDAP is
+// currently on (LDAPURL non-empty) — nil/false means every login goes
+// through the local password path, exactly as if LDAP had never been
+// configured. Building the client here rather than caching one means a
+// portal edit to any LDAP field takes effect on the very next login
+// attempt, no restart needed, matching every other v1.5/v1.8 portal
+// setting.
+func (a *AuthService) ldapConfigured() (ldapauth.Client, LDAPRoleMapping, bool) {
+	if a.opts.Settings == nil {
+		return nil, LDAPRoleMapping{}, false
+	}
+	cur := a.opts.Settings.Current()
+	url := strings.TrimSpace(cur.LDAPURL)
+	if url == "" {
+		return nil, LDAPRoleMapping{}, false
+	}
+	cfg := ldapauth.Config{
+		URL:          url,
+		BindDN:       cur.LDAPBindDN,
+		BindPassword: cur.LDAPBindPassword,
+		BaseDN:       cur.LDAPBaseDN,
+		UserFilter:   cur.LDAPUserFilter,
+		GroupFilter:  cur.LDAPGroupFilter,
+	}
+	roleMap := LDAPRoleMapping{
+		Editor:    cur.LDAPRoleMapEditor,
+		Viewer:    cur.LDAPRoleMapViewer,
+		Requester: cur.LDAPRoleMapRequester,
+	}
+	return a.opts.LDAPClientFactory(cfg), roleMap, true
 }
 
 // Bootstrap ensures at least one account exists, creating an initial admin
@@ -114,12 +191,14 @@ type LoginStep struct {
 	User         *domain.User
 }
 
-// Login verifies email and password. When the account has MFA enabled, it
+// Login verifies email and password — via a local password check, or, once
+// LDAP is configured, via an LDAP bind for every account except admin (see
+// AuthOptions.Settings's doc comment). When the account has MFA enabled, it
 // returns a short-lived pending token instead of a session — the caller
 // must then call VerifyMFA with a TOTP or recovery code to finish signing
 // in. An account without MFA enabled yet gets a session immediately; the
 // onboarding check in the delivery layer forces MFA enrollment before it
-// can do anything else.
+// can do anything else — MFA is mandatory regardless of auth source.
 func (a *AuthService) Login(ctx context.Context, email, password, ip string) (*LoginStep, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 
@@ -129,11 +208,41 @@ func (a *AuthService) Login(ctx context.Context, email, password, ip string) (*L
 		return nil, domain.ErrUnauthorized
 	}
 
-	user, err := a.repo.GetUserByEmail(ctx, email)
-	if err != nil {
-		a.recordAttempt(ctx, email, ip, false, "no_such_user")
-		return nil, domain.ErrUnauthorized
+	user, lookupErr := a.repo.GetUserByEmail(ctx, email)
+
+	// An admin account always authenticates locally, LDAP configured or
+	// not — admin is never LDAP-derived (see LDAPRoleMapping and
+	// UpdateRole), so there is nothing for an LDAP bind to resolve here.
+	if lookupErr == nil && user.Role == domain.RoleAdmin {
+		return a.passwordLogin(ctx, email, user, password, ip)
 	}
+
+	ldapClient, roleMap, ldapOn := a.ldapConfigured()
+	if !ldapOn {
+		// LDAP isn't configured: unchanged pre-LDAP behavior for every role.
+		if lookupErr != nil {
+			a.recordAttempt(ctx, email, ip, false, "no_such_user")
+			return nil, domain.ErrUnauthorized
+		}
+		return a.passwordLogin(ctx, email, user, password, ip)
+	}
+
+	// LDAP is configured and this isn't an admin account (it may not exist
+	// locally yet at all — that's the JIT-provisioning case) — every such
+	// account authenticates via LDAP, never a local password, even if it
+	// was created locally before LDAP was turned on. See CLAUDE.md's LDAP
+	// locked decisions for why this is intentional rather than a fallback.
+	var existing *domain.User
+	if lookupErr == nil {
+		existing = user
+	}
+	return a.ldapLogin(ctx, email, password, ip, existing, ldapClient, roleMap)
+}
+
+// passwordLogin is the pre-LDAP local password + MFA login path, unchanged
+// in behavior — factored out so Login can share it between "LDAP not
+// configured" and "this is an admin account" without duplicating it.
+func (a *AuthService) passwordLogin(ctx context.Context, email string, user *domain.User, password, ip string) (*LoginStep, error) {
 	if !authcrypto.VerifyPassword(user.PasswordHash, password) {
 		a.recordAttempt(ctx, email, ip, false, "bad_password")
 		return nil, domain.ErrUnauthorized
@@ -155,6 +264,120 @@ func (a *AuthService) Login(ctx context.Context, email, password, ip string) (*L
 	a.recordAttempt(ctx, email, ip, true, "ok_no_mfa_enrolled")
 	a.touchLastLogin(ctx, user)
 	return &LoginStep{Session: sess, RawToken: raw, User: user}, nil
+}
+
+// ldapLogin authenticates against LDAP via search-then-bind, JIT-provisions
+// a local account on a brand-new user's first successful login, and
+// re-syncs role/AuthSource on every later one — LDAP groups are the
+// standing source of truth for a non-admin account's role once LDAP is
+// configured, not just a one-time provisioning hint. A user whose groups
+// match no configured role mapping is denied and logged (fail-closed), not
+// silently provisioned at a default role.
+func (a *AuthService) ldapLogin(ctx context.Context, email, password, ip string, existing *domain.User, ldapClient ldapauth.Client, roleMap LDAPRoleMapping) (*LoginStep, error) {
+	result, err := ldapClient.Authenticate(ctx, email, password)
+	if err != nil {
+		if errors.Is(err, ldapauth.ErrInvalidCredentials) {
+			a.recordAttempt(ctx, email, ip, false, "ldap_bad_credentials")
+		} else {
+			a.log.Warn("auth: ldap authenticate failed", "email", email, "error", err)
+			a.recordAttempt(ctx, email, ip, false, "ldap_error")
+		}
+		return nil, domain.ErrUnauthorized
+	}
+
+	role, ok := resolveLDAPRole(roleMap, result.Groups)
+	if !ok {
+		a.log.Warn("auth: ldap user has no mapped role — denying login",
+			"email", email, "dn", result.DN, "groups", result.Groups)
+		a.recordAttempt(ctx, email, ip, false, "ldap_no_role_mapping")
+		return nil, domain.ErrUnauthorized
+	}
+
+	user := existing
+	switch {
+	case user == nil:
+		hash, err := lockedPasswordHash()
+		if err != nil {
+			return nil, err
+		}
+		user = &domain.User{
+			Email:        email,
+			PasswordHash: hash,
+			Role:         role,
+			AuthSource:   domain.AuthSourceLDAP,
+		}
+		if err := user.Validate(); err != nil {
+			return nil, err
+		}
+		if err := a.repo.CreateUser(ctx, user); err != nil {
+			return nil, err
+		}
+		a.log.Info("auth: JIT-provisioned new LDAP account", "email", email, "role", role)
+	case user.AuthSource != domain.AuthSourceLDAP || user.Role != role:
+		user.AuthSource = domain.AuthSourceLDAP
+		user.Role = role
+		if err := a.repo.UpdateUser(ctx, user); err != nil {
+			return nil, err
+		}
+	}
+
+	if user.MFAEnabled {
+		token, err := a.signPending(user.ID)
+		if err != nil {
+			return nil, err
+		}
+		a.recordAttempt(ctx, email, ip, true, "ldap_ok_awaiting_mfa")
+		return &LoginStep{PendingToken: token, User: user}, nil
+	}
+
+	sess, raw, err := a.createSession(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	a.recordAttempt(ctx, email, ip, true, "ldap_ok_no_mfa_enrolled")
+	a.touchLastLogin(ctx, user)
+	return &LoginStep{Session: sess, RawToken: raw, User: user}, nil
+}
+
+// resolveLDAPRole maps a set of group DNs the user belongs to onto an app
+// role, per roleMap, checking Editor before Viewer before Requester so the
+// most privileged matching group wins. Comparison is case-insensitive since
+// DN component ordering is significant but casing conventionally isn't
+// across directory implementations.
+func resolveLDAPRole(roleMap LDAPRoleMapping, groups []string) (domain.Role, bool) {
+	memberOf := make(map[string]bool, len(groups))
+	for _, g := range groups {
+		memberOf[strings.ToLower(g)] = true
+	}
+	for _, candidate := range []struct {
+		role domain.Role
+		dns  []string
+	}{
+		{domain.RoleEditor, roleMap.Editor},
+		{domain.RoleViewer, roleMap.Viewer},
+		{domain.RoleRequester, roleMap.Requester},
+	} {
+		for _, dn := range candidate.dns {
+			if memberOf[strings.ToLower(dn)] {
+				return candidate.role, true
+			}
+		}
+	}
+	return "", false
+}
+
+// lockedPasswordHash returns a bcrypt hash of a random value nobody knows,
+// for the NOT NULL password_hash column on an LDAP-provisioned account that
+// has no local password at all. It can never verify successfully — that's
+// the point — and Login never even attempts to check it for such an
+// account, since a non-admin account with LDAP configured always goes
+// through ldapLogin instead of passwordLogin.
+func lockedPasswordHash() (string, error) {
+	token, err := authcrypto.RandomToken(32)
+	if err != nil {
+		return "", fmt.Errorf("auth: generate locked password placeholder: %w", err)
+	}
+	return authcrypto.HashPassword(token)
 }
 
 // VerifyMFA completes a login started by Login, checking a TOTP code first
@@ -377,10 +600,18 @@ func (a *AuthService) GetUser(ctx context.Context, id uuid.UUID) (*domain.User, 
 }
 
 // UpdateRole changes an account's role, refusing to demote the last admin.
+// It also refuses to promote an LDAP-sourced account to admin — admin is
+// always locally-granted (see AuthOptions.Settings's doc comment and
+// CLAUDE.md's LDAP locked decisions): create a separate local admin account
+// instead, since an LDAP-provisioned account has no usable local password
+// to fall back on once it stopped authenticating via LDAP.
 func (a *AuthService) UpdateRole(ctx context.Context, id uuid.UUID, role domain.Role) error {
 	u, err := a.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	if role == domain.RoleAdmin && u.AuthSource == domain.AuthSourceLDAP {
+		return domain.Invalid("role", "an LDAP account can't be promoted to admin — create a separate local admin account instead")
 	}
 	if u.Role == domain.RoleAdmin && role != domain.RoleAdmin {
 		if err := a.requireAnotherAdmin(ctx); err != nil {
@@ -395,11 +626,19 @@ func (a *AuthService) UpdateRole(ctx context.Context, id uuid.UUID, role domain.
 }
 
 // ResetPassword sets a new temporary password and forces every existing
-// session for the account to sign out.
+// session for the account to sign out. Refuses an LDAP-sourced account —
+// its password_hash column holds an intentionally unusable placeholder (see
+// lockedPasswordHash) and Login never checks it, so resetting it would look
+// like it worked while changing nothing about how the account actually
+// authenticates; the users admin page hides this control for such accounts
+// for the same reason, this is the server-side half of that.
 func (a *AuthService) ResetPassword(ctx context.Context, id uuid.UUID, newPassword string) error {
 	u, err := a.repo.GetUserByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	if u.AuthSource == domain.AuthSourceLDAP {
+		return domain.Invalid("password", "this account authenticates via LDAP — its password can't be reset here")
 	}
 	hash, err := authcrypto.HashPassword(newPassword)
 	if err != nil {

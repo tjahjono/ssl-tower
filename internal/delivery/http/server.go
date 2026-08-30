@@ -112,6 +112,7 @@ func (s *Server) routes() {
 	// name, which is a materially bigger blast radius than any single
 	// certificate's own key.
 	s.mux.HandleFunc("POST /certificates/issuers/root-cas", s.requireAdmin(s.handleRootCAUpload))
+	s.mux.HandleFunc("POST /certificates/issuers/root-cas/generate", s.requireAdmin(s.handleRootCAGenerate))
 	s.mux.HandleFunc("DELETE /certificates/issuers/root-cas/{id}", s.requireAdmin(s.handleRootCADelete))
 	s.mux.HandleFunc("POST /certificates/generate", s.requireWrite(s.handleCertificateGenerate))
 	s.mux.HandleFunc("POST /certificates/import", s.requireWrite(s.handleCertificateImport))
@@ -123,8 +124,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /certificates/{id}/certificate", s.requireWrite(s.handleCertificateAttach))
 	s.mux.HandleFunc("POST /certificates/{id}/chain", s.requireAdmin(s.handleCertificateChainUpdate))
 	s.mux.HandleFunc("POST /certificates/{id}/validate", s.requireWrite(s.handleCertificateValidate))
-	s.mux.HandleFunc("POST /certificates/{id}/self-sign", s.requireWrite(s.handleCertificateSelfSign))
-	s.mux.HandleFunc("POST /certificates/{id}/sign-with-root-ca", s.requireWrite(s.handleCertificateSignWithRootCA))
+	s.mux.HandleFunc("POST /certificates/{id}/issue", s.requireWrite(s.handleCertificateIssue))
 	s.mux.HandleFunc("GET /certificates/{id}/download", s.requireAuth(s.handleCertificateDownload))
 
 	// Authentication
@@ -162,6 +162,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /settings", s.requireAdmin(s.handleSettingsPage))
 	s.mux.HandleFunc("POST /settings", s.requireAdmin(s.handleSettingsSubmit))
 	s.mux.HandleFunc("POST /settings/encryption-key", s.requireAdmin(s.handleSettingsEncryptionKeyRotate))
+	s.mux.HandleFunc("GET /settings/encryption-key/status/{id}", s.requireAdmin(s.handleSettingsEncryptionKeyStatus))
 
 	// Theme preference — public, cosmetic, no session needed.
 	s.mux.HandleFunc("POST /theme", s.handleThemeToggle)
@@ -180,6 +181,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tickets/{id}/approve-internal", s.requireWrite(s.handleTicketApproveInternal))
 	s.mux.HandleFunc("POST /tickets/{id}/approve-external", s.requireWrite(s.handleTicketApproveExternal))
 	s.mux.HandleFunc("POST /tickets/{id}/fulfill-external", s.requireWrite(s.handleTicketFulfillExternal))
+	s.mux.HandleFunc("POST /tickets/{id}/generate-csr", s.requireWrite(s.handleTicketGenerateCSR))
 	s.mux.HandleFunc("POST /tickets/{id}/reject", s.requireWrite(s.handleTicketReject))
 	s.mux.HandleFunc("POST /tickets/{id}/cancel", s.requireWrite(s.handleRequestCancel))
 	s.mux.HandleFunc("POST /tickets/{id}/deliver", s.requireWrite(s.handleTicketDeliver))

@@ -68,6 +68,25 @@ func (r Role) Label() string {
 	}
 }
 
+// AuthSource records how an account authenticates: with a local password,
+// or against an external LDAP directory. It exists mainly to gate two
+// things — see CLAUDE.md's LDAP locked decisions for the full reasoning:
+//   - Once LDAP is configured, only an admin-role account may still sign in
+//     with a local password; every other role must authenticate via LDAP.
+//   - An LDAP-sourced account can never be promoted to admin (admin is
+//     always locally-granted) — AuthService.UpdateRole refuses it.
+type AuthSource string
+
+const (
+	AuthSourceLocal AuthSource = "local"
+	AuthSourceLDAP  AuthSource = "ldap"
+)
+
+// Valid reports whether s is a known auth source.
+func (s AuthSource) Valid() bool {
+	return s == AuthSourceLocal || s == AuthSourceLDAP
+}
+
 // User is an account that can sign in to manage monitors and CSRs. Reading
 // the public dashboard never requires one.
 type User struct {
@@ -75,6 +94,7 @@ type User struct {
 	Email              string
 	PasswordHash       string
 	Role               Role
+	AuthSource         AuthSource
 	TOTPSecret         string
 	MFAEnabled         bool
 	MustChangePassword bool
@@ -82,6 +102,11 @@ type User struct {
 	UpdatedAt          time.Time
 	LastLoginAt        *time.Time
 }
+
+// IsLDAP reports whether this account authenticates against LDAP rather
+// than a local password — used by the users admin page to hide password-
+// reset controls that would otherwise be misleading for such an account.
+func (u *User) IsLDAP() bool { return u != nil && u.AuthSource == AuthSourceLDAP }
 
 // NeedsPasswordChange and NeedsMFAEnrollment each report whether the account
 // still has a forced onboarding step to complete before it can use the app
@@ -102,6 +127,15 @@ func (u *User) Validate() error {
 	}
 	if !u.Role.Valid() {
 		return Invalid("role", "role must be admin, editor, viewer, or requester")
+	}
+	if u.AuthSource == "" {
+		// Defaults local rather than requiring every existing call site
+		// (Bootstrap, admin-created accounts) to set it explicitly — only
+		// the LDAP JIT-provisioning path needs to set AuthSourceLDAP.
+		u.AuthSource = AuthSourceLocal
+	}
+	if !u.AuthSource.Valid() {
+		return Invalid("auth_source", "auth source must be local or ldap")
 	}
 	return nil
 }

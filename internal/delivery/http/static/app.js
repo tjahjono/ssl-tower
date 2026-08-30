@@ -104,6 +104,40 @@
     if (form) form.reset();
   });
 
+  // Close a collapsible panel once a form inside it successfully submits —
+  // e.g. the "New request" form on /requests hides itself right after a
+  // requester submits a ticket, instead of sitting open with a stale,
+  // already-submitted form. data-hide-on-success="<id>" on the form names
+  // the panel (usually the same one a [data-toggle-target] button opened)
+  // to hide; if that button exists, its label flips back to the "closed"
+  // state too, exactly as if the panel had been closed by hand.
+  //
+  // htmx:afterRequest's event.detail.successful only reflects the HTTP
+  // status, but this codebase always answers htmx requests with 200 and
+  // distinguishes success from a validation failure purely via the flash
+  // message's Kind — so a rejected submission (missing common name, etc.)
+  // still arrives here as "successful". The oob-swapped #flash carries a
+  // data-flash-kind attribute (see flash.html) precisely so this check can
+  // tell the two apart and leave the form open, with its error showing, on
+  // an actual failure.
+  document.body.addEventListener("htmx:afterRequest", function (event) {
+    if (!event.detail || !event.detail.successful) return;
+    var form = event.target.closest ? event.target.closest("form[data-hide-on-success]") : null;
+    if (!form) return;
+    var flashEl = document.getElementById("flash");
+    var flashKind = flashEl ? flashEl.querySelector("[data-flash-kind]") : null;
+    if (flashKind && flashKind.getAttribute("data-flash-kind") === "error") return;
+    var targetId = form.getAttribute("data-hide-on-success");
+    var panel = document.getElementById(targetId);
+    if (!panel) return;
+    panel.classList.add("hidden");
+    var toggle = document.querySelector('[data-toggle-target="' + targetId + '"]');
+    if (toggle) {
+      var label = toggle.querySelector("[data-toggle-label]");
+      if (label) label.textContent = toggle.getAttribute("data-toggle-label-closed");
+    }
+  });
+
   // Toggle the key-size / curve selects to match the chosen algorithm.
   document.addEventListener("change", function (event) {
     if (event.target.name !== "key_algorithm") return;
@@ -115,6 +149,35 @@
     var isEC = event.target.value === "ecdsa";
     rsa.classList.toggle("hidden", isEC);
     ec.classList.toggle("hidden", !isEC);
+  });
+
+  // Default the SANs textarea to the common name as it's typed, on any form
+  // that has both fields (CSR generation, and a ticket's "approve & sign"
+  // form) — the server already adds the common name to the SAN list itself
+  // if it's left out (certutil.CreateCSR), so this is a pure UX nicety that
+  // just shows that default up front instead of leaving the field looking
+  // empty. sans.dataset.autoFilled marks a value this listener itself wrote
+  // (a plain .value assignment fires no "input" event, so it never
+  // self-triggers the "real edit" listener below): SANs keeps mirroring the
+  // common name for as long as its content is either blank or still just
+  // that auto-fill, but the moment it holds anything else — pre-filled
+  // server-side from a ticket's existing DNSNames, or actually typed by the
+  // operator — this stops touching it for good.
+  document.addEventListener("input", function (event) {
+    if (event.target.name !== "common_name") return;
+    var form = event.target.form;
+    if (!form) return;
+    var sans = form.querySelector('[name="sans"]');
+    if (!sans) return;
+    var hasRealContent = sans.value.trim() !== "" && sans.dataset.autoFilled !== "1";
+    if (hasRealContent) return;
+    sans.value = event.target.value;
+    sans.dataset.autoFilled = "1";
+  });
+
+  document.addEventListener("input", function (event) {
+    if (event.target.name !== "sans") return;
+    delete event.target.dataset.autoFilled;
   });
 
   // Generic conditional field visibility. An element carrying

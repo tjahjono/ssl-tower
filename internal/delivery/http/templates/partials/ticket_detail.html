@@ -83,8 +83,16 @@
               </div>
               <div>
                 <label for="ticket-sans" class="field-label mb-1 block">Subject alternative names</label>
+                {{/* Default to the common name when the requester didn't list any additional
+                     names — same "default SAN to CN" convenience the certificate-generation page
+                     gives an editor, just applied server-side here since the common name already
+                     arrives pre-filled from the ticket rather than freshly typed. data-auto-filled
+                     marks it the same way app.js's own CN-to-SANs mirror would, so if the approver
+                     edits the common name before submitting, this still keeps mirroring it — real
+                     DNSNames from the requester are never touched, exactly as before. */}}
                 <textarea id="ticket-sans" name="sans" rows="3" spellcheck="false"
-                          class="field-input w-full px-3 py-2 font-mono text-xs">{{join "\n" $t.DNSNames}}</textarea>
+                          {{if not $t.DNSNames}}data-auto-filled="1"{{end}}
+                          class="field-input w-full px-3 py-2 font-mono text-xs">{{if $t.DNSNames}}{{join "\n" $t.DNSNames}}{{else}}{{$t.CommonName}}{{end}}</textarea>
               </div>
               <div class="grid gap-4 sm:grid-cols-3">
                 <div>
@@ -161,11 +169,85 @@
       {{end}}
 
       {{if and (eq $t.Status "in_progress") (eq $t.TrustClass "external")}}
+        {{if .PendingCertificate}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">CSR generated</h2>
+          <p class="text-xs text-ink-5">
+            A key pair and signing request are on file for this ticket. Open it to copy the CSR or
+            download the private key, submit the CSR to the external CA using PO {{$t.PONumber}},
+            then attach the certificate it returns below — it's matched to this same key
+            automatically.
+          </p>
+          <a href="/certificates/{{.PendingCertificate.ID}}" class="btn-ghost mt-3 inline-flex px-4 py-2 text-sm">
+            View the generated CSR &rarr;
+          </a>
+        </section>
+        {{else}}
+        <section class="rounded-xl border border-line/5 bg-card/40 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-ink">Generate a CSR</h2>
+          <p class="mb-4 text-xs text-ink-5">
+            Mint a key pair and signing request to submit to the external CA — optional; skip this
+            and paste an already-issued certificate below instead if the CSR was generated
+            elsewhere.
+          </p>
+          <form hx-post="/tickets/{{$t.ID}}/generate-csr" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label for="csr-common-name" class="field-label mb-1 block">Common name *</label>
+                <input id="csr-common-name" name="common_name" required value="{{$t.CommonName}}" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label for="csr-organization" class="field-label mb-1 block">Organization</label>
+                <input id="csr-organization" name="organization" value="{{$t.Organization}}" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+            </div>
+            <div>
+              <label for="csr-sans" class="field-label mb-1 block">Subject alternative names</label>
+              {{/* Same "default SAN to CN" convenience as the internal approval form above —
+                   see its comment for the full rationale and data-auto-filled's role. */}}
+              <textarea id="csr-sans" name="sans" rows="3" spellcheck="false"
+                        {{if not $t.DNSNames}}data-auto-filled="1"{{end}}
+                        class="field-input w-full px-3 py-2 font-mono text-xs">{{if $t.DNSNames}}{{join "\n" $t.DNSNames}}{{else}}{{$t.CommonName}}{{end}}</textarea>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label for="csr-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
+                <select id="csr-key-algorithm" name="key_algorithm" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                  <option value="rsa">RSA</option>
+                  <option value="ecdsa">ECDSA</option>
+                </select>
+              </div>
+              <div data-key-rsa>
+                <label for="csr-key-bits" class="field-label mb-1 block">Key size</label>
+                <select id="csr-key-bits" name="key_bits" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                  <option value="2048">2048 bit</option>
+                  <option value="3072">3072 bit</option>
+                  <option value="4096">4096 bit</option>
+                </select>
+              </div>
+              <div data-key-ecdsa class="hidden">
+                <label for="csr-key-curve" class="field-label mb-1 block">Curve</label>
+                <select id="csr-key-curve" name="key_curve" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                  <option value="P-256">P-256</option>
+                  <option value="P-384">P-384</option>
+                  <option value="P-521">P-521</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit" class="btn-primary px-4 py-2 text-sm">Generate CSR</button>
+          </form>
+        </section>
+        {{end}}
+
         <section class="rounded-xl border border-line/5 bg-card/40 p-5">
           <h2 class="mb-1 text-sm font-semibold text-ink">Attach the issued certificate</h2>
           <p class="mb-4 text-xs text-ink-5">
             Paste the PEM the external CA returned. A full chain is fine — the first block is
-            stored as the leaf. Attaching it fulfills and closes this ticket.
+            stored as the leaf.
+            {{if .PendingCertificate}}
+              Matched automatically to the key generated above — no need to paste a private key.
+            {{end}}
+            Attaching it fulfills and closes this ticket.
           </p>
           <form hx-post="/tickets/{{$t.ID}}/fulfill-external" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-3">
             <div>
@@ -179,11 +261,13 @@
               <textarea id="ticket-chain-pem" name="chain_pem" rows="4" spellcheck="false"
                         class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
             </div>
+            {{if not .PendingCertificate}}
             <div>
               <label for="ticket-key-pem" class="field-label mb-1 block">Private key PEM <span class="normal-case text-ink-6">(optional)</span></label>
               <textarea id="ticket-key-pem" name="private_key_pem" rows="4" spellcheck="false"
                         class="field-input w-full p-3 font-mono text-[11px] text-ink-3"></textarea>
             </div>
+            {{end}}
             <button type="submit" class="btn-primary px-4 py-2 text-sm">Attach &amp; fulfill</button>
           </form>
         </section>

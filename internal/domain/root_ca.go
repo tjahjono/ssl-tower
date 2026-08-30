@@ -9,11 +9,11 @@ import (
 )
 
 // RootCA is an internal certificate authority this app can sign with
-// directly — an admin uploads an existing CA's certificate and private key,
-// then a pending CSR can be issued against it (CertificateService's
-// SignWithRootCA) instead of only ever self-signing or waiting on an
-// outside CA. Deliberately upload-only in v1.1: minting a brand-new root
-// CA keypair in-app is a natural follow-up, not built here.
+// directly — either an admin uploads an existing CA's certificate and
+// private key, or (v1.6) the app mints a brand-new self-signed one in-app
+// (CertificateService.GenerateRootCA) — after which a pending CSR can be
+// issued against it (CertificateService's SignWithRootCA) instead of only
+// ever self-signing or waiting on an outside CA.
 type RootCA struct {
 	ID   uuid.UUID
 	Name string // operator-chosen label, e.g. "Acme Internal CA"

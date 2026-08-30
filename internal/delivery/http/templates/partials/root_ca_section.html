@@ -69,5 +69,98 @@
       </button>
     </form>
   </details>
+
+  <details class="border-t border-line/5">
+    <summary class="cursor-pointer list-none px-5 py-3 text-sm font-medium text-hue-sky hover:text-hue-sky-strong">
+      Generate a Root CA
+    </summary>
+    <form hx-post="/certificates/issuers/root-cas/generate" hx-target="#root-ca-section" hx-swap="outerHTML"
+          class="space-y-4 px-5 pb-5">
+      <p class="text-xs text-ink-5">
+        Mint a brand-new self-signed Root CA key pair and certificate right here — nothing to
+        paste in. Use this if you don't already hold a CA elsewhere; use "Upload a Root CA" above
+        if you do.
+      </p>
+      <div>
+        <label for="root-ca-gen-name" class="field-label mb-1 block">Name</label>
+        <input id="root-ca-gen-name" name="name" type="text" required placeholder="e.g. Acme Internal CA"
+               class="field-input w-full px-3 py-2 text-sm">
+      </div>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label for="root-ca-gen-common-name" class="field-label mb-1 block">Common name</label>
+          <input id="root-ca-gen-common-name" name="common_name" type="text" required
+                 placeholder="Acme Internal Root CA"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-organization" class="field-label mb-1 block">Organization</label>
+          <input id="root-ca-gen-organization" name="organization" type="text" placeholder="Acme Corp"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-ou" class="field-label mb-1 block">Organizational unit</label>
+          <input id="root-ca-gen-ou" name="organizational_unit" type="text" placeholder="Platform team"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-country" class="field-label mb-1 block">Country</label>
+          <input id="root-ca-gen-country" name="country" type="text" maxlength="2" placeholder="ID"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-province" class="field-label mb-1 block">State / province</label>
+          <input id="root-ca-gen-province" name="province" type="text" placeholder="Jakarta"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-locality" class="field-label mb-1 block">Locality</label>
+          <input id="root-ca-gen-locality" name="locality" type="text" placeholder="Jakarta Selatan"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-email" class="field-label mb-1 block">Email</label>
+          <input id="root-ca-gen-email" name="email" type="email" placeholder="ops@example.com"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="root-ca-gen-valid-days" class="field-label mb-1 block">Validity (days)</label>
+          <input id="root-ca-gen-valid-days" name="valid_days" type="number" min="1" max="7300" value="3650"
+                 class="field-input w-full px-3 py-2 text-sm">
+        </div>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label for="root-ca-gen-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
+          <select id="root-ca-gen-key-algorithm" name="key_algorithm"
+                  class="field-select w-full py-2 pl-3 pr-9 text-sm">
+            <option value="rsa">RSA</option>
+            <option value="ecdsa">ECDSA</option>
+          </select>
+        </div>
+        <div data-key-rsa>
+          <label for="root-ca-gen-key-bits" class="field-label mb-1 block">Key size</label>
+          <select id="root-ca-gen-key-bits" name="key_bits"
+                  class="field-select w-full py-2 pl-3 pr-9 text-sm">
+            <option value="2048">2048 bit</option>
+            <option value="3072">3072 bit</option>
+            <option value="4096" selected>4096 bit</option>
+          </select>
+        </div>
+        <div data-key-ecdsa class="hidden">
+          <label for="root-ca-gen-key-curve" class="field-label mb-1 block">Curve</label>
+          <select id="root-ca-gen-key-curve" name="key_curve"
+                  class="field-select w-full py-2 pl-3 pr-9 text-sm">
+            <option value="P-256">P-256</option>
+            <option value="P-384">P-384</option>
+            <option value="P-521">P-521</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit" class="btn-primary px-4 py-2 text-sm">
+        Generate Root CA
+      </button>
+    </form>
+  </details>
 </section>
 {{end}}

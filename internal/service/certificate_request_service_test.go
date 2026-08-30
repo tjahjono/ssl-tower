@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/certutil"
 )
 
 // fakeCertificateRequestRepo is a minimal in-memory
@@ -378,6 +379,124 @@ func TestExternalTicketApproveThenFulfillCloses(t *testing.T) {
 	}
 	if loaded.TrustClass() != domain.TrustExternal {
 		t.Errorf("imported certificate TrustClass = %q, want external", loaded.TrustClass())
+	}
+}
+
+// TestGenerateCSRThenFulfillExternalAttachesToSameCertificate covers the
+// manual "Generate a CSR" ticket action end to end: generating a CSR records
+// a PendingCertificateID on the ticket, and a later FulfillExternal attaches
+// the externally-signed certificate to that same vault record — proven by
+// asserting the resulting certificate's ID equals the pending one's, rather
+// than a freshly Import-ed record — matching it to the private key that was
+// already generated instead of requiring the admin to paste one in.
+func TestGenerateCSRThenFulfillExternalAttachesToSameCertificate(t *testing.T) {
+	reqs, certs := newTestCertificateRequestService(t)
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestNew, TrustClass: domain.TrustExternal,
+		CommonName: "csr-flow.example.com", PONumber: "PO-CSR-1",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	approverID := uuid.New()
+
+	if _, _, err := reqs.GenerateCSR(context.Background(), GenerateCSRInput{
+		TicketID: ticket.ID, CommonName: ticket.CommonName, KeyAlgorithm: "rsa", KeyBits: 2048,
+	}); err == nil {
+		t.Fatal("expected GenerateCSR to be rejected before the ticket is approved")
+	}
+
+	if _, err := reqs.ApproveExternal(context.Background(), ApproveExternalInput{TicketID: ticket.ID, ApproverID: approverID}); err != nil {
+		t.Fatalf("ApproveExternal: %v", err)
+	}
+
+	updated, pending, err := reqs.GenerateCSR(context.Background(), GenerateCSRInput{
+		TicketID: ticket.ID, CommonName: ticket.CommonName, KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCSR: %v", err)
+	}
+	if updated.PendingCertificateID == nil || *updated.PendingCertificateID != pending.ID {
+		t.Fatal("GenerateCSR must record the new certificate as the ticket's PendingCertificateID")
+	}
+	if pending.CSRPEM == "" {
+		t.Fatal("GenerateCSR must produce a certificate record holding a CSR")
+	}
+
+	// Generating a second CSR for the same ticket must be rejected — one is
+	// already on file.
+	if _, _, err := reqs.GenerateCSR(context.Background(), GenerateCSRInput{
+		TicketID: ticket.ID, CommonName: ticket.CommonName, KeyAlgorithm: "rsa", KeyBits: 2048,
+	}); err == nil {
+		t.Fatal("expected a second GenerateCSR call to be rejected")
+	}
+
+	// Simulate the external CA signing exactly this CSR (subject != issuer,
+	// the realistic external shape — see TestExternalTicketApproveThenFulfillCloses).
+	keyPEM, err := certs.PrivateKey(pending)
+	if err != nil {
+		t.Fatalf("PrivateKey: %v", err)
+	}
+	key, err := certutil.ParsePrivateKeyPEM(keyPEM)
+	if err != nil {
+		t.Fatalf("ParsePrivateKeyPEM: %v", err)
+	}
+	csr, err := certutil.ParseCSRPEM(pending.CSRPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM: %v", err)
+	}
+	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
+	caCert, err := certutil.ParseCertificatesPEM(caCertPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificatesPEM (ca): %v", err)
+	}
+	caKey, err := certutil.ParsePrivateKeyPEM(caKeyPEM)
+	if err != nil {
+		t.Fatalf("ParsePrivateKeyPEM (ca): %v", err)
+	}
+	_, certPEM, err := certutil.SignWithCA(csr, caCert[0], caKey, 365, nil)
+	if err != nil {
+		t.Fatalf("SignWithCA: %v", err)
+	}
+	_ = key // only needed to confirm the key parses; AttachCertificate re-derives the match itself.
+
+	fulfilled, cert, err := reqs.FulfillExternal(context.Background(), FulfillExternalInput{
+		TicketID: ticket.ID, ApproverID: approverID,
+		// A stray pasted private key must be silently ignored — the ticket
+		// already has one on file via PendingCertificateID.
+		Import: ImportInput{CertificatePEM: certPEM, PrivateKeyPEM: "-----BEGIN garbage-----"},
+	})
+	if err != nil {
+		t.Fatalf("FulfillExternal: %v", err)
+	}
+	if fulfilled.Status != domain.RequestFulfilled {
+		t.Errorf("Status = %q, want fulfilled", fulfilled.Status)
+	}
+	if cert.ID != pending.ID {
+		t.Errorf("fulfilled certificate ID = %s, want the same record GenerateCSR created (%s), not a new one", cert.ID, pending.ID)
+	}
+	if fulfilled.ResultCertificateID == nil || *fulfilled.ResultCertificateID != pending.ID {
+		t.Error("ResultCertificateID must link to the pre-generated CSR's certificate record")
+	}
+}
+
+// TestGenerateCSRRejectsInternalTicket confirms the manual CSR-generation
+// action is exclusive to external tickets — an internal ticket already has
+// its own "Approve & sign" path that mints and signs a certificate in one
+// step, with no separate CSR-generation stage.
+func TestGenerateCSRRejectsInternalTicket(t *testing.T) {
+	reqs, _ := newTestCertificateRequestService(t)
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestNew, TrustClass: domain.TrustInternal,
+		CommonName: "internal.example.com",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, _, err := reqs.GenerateCSR(context.Background(), GenerateCSRInput{
+		TicketID: ticket.ID, CommonName: ticket.CommonName, KeyAlgorithm: "rsa", KeyBits: 2048,
+	}); err == nil {
+		t.Fatal("expected GenerateCSR to reject an internal ticket")
 	}
 }
 

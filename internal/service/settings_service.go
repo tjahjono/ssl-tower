@@ -60,6 +60,9 @@ var settingKeys = []string{
 	domain.SettingAlertEmailFrom, domain.SettingAlertEmailTo,
 	domain.SettingTeamsWebhookURL,
 	domain.SettingTicketSLADays,
+	domain.SettingLDAPURL, domain.SettingLDAPBindDN, domain.SettingLDAPBindPassword,
+	domain.SettingLDAPBaseDN, domain.SettingLDAPUserFilter, domain.SettingLDAPGroupFilter,
+	domain.SettingLDAPRoleMapEditor, domain.SettingLDAPRoleMapViewer, domain.SettingLDAPRoleMapRequester,
 }
 
 // Bootstrap seeds app_settings from seed, but only for keys that don't
@@ -96,6 +99,15 @@ func (s *SettingsService) Bootstrap(ctx context.Context, seed SeedValues) error 
 	seedIfMissing(domain.SettingAlertEmailTo, strings.Join(seed.Settings.AlertEmailTo, ","))
 	seedIfMissing(domain.SettingTeamsWebhookURL, seed.Settings.TeamsWebhookURL)
 	seedIfMissing(domain.SettingTicketSLADays, strconv.Itoa(seed.Settings.TicketSLADays))
+	seedIfMissing(domain.SettingLDAPURL, seed.Settings.LDAPURL)
+	seedIfMissing(domain.SettingLDAPBindDN, seed.Settings.LDAPBindDN)
+	seedIfMissing(domain.SettingLDAPBindPassword, seed.Settings.LDAPBindPassword)
+	seedIfMissing(domain.SettingLDAPBaseDN, seed.Settings.LDAPBaseDN)
+	seedIfMissing(domain.SettingLDAPUserFilter, seed.Settings.LDAPUserFilter)
+	seedIfMissing(domain.SettingLDAPGroupFilter, seed.Settings.LDAPGroupFilter)
+	seedIfMissing(domain.SettingLDAPRoleMapEditor, strings.Join(seed.Settings.LDAPRoleMapEditor, ";"))
+	seedIfMissing(domain.SettingLDAPRoleMapViewer, strings.Join(seed.Settings.LDAPRoleMapViewer, ";"))
+	seedIfMissing(domain.SettingLDAPRoleMapRequester, strings.Join(seed.Settings.LDAPRoleMapRequester, ";"))
 	seedIfMissing(domain.SettingEncryptionKey, seed.EncryptionKey)
 
 	if len(toSeed) > 0 {
@@ -133,6 +145,22 @@ func (s *SettingsService) Reload(ctx context.Context) error {
 		AlertEmailTo:       splitTrimmed(values[domain.SettingAlertEmailTo]),
 		TeamsWebhookURL:    values[domain.SettingTeamsWebhookURL],
 		TicketSLADays:      parseIntSetting(s.log, values, domain.SettingTicketSLADays),
+
+		LDAPURL:          values[domain.SettingLDAPURL],
+		LDAPBindDN:       values[domain.SettingLDAPBindDN],
+		LDAPBindPassword: values[domain.SettingLDAPBindPassword],
+		LDAPBaseDN:       values[domain.SettingLDAPBaseDN],
+		LDAPUserFilter:   values[domain.SettingLDAPUserFilter],
+		LDAPGroupFilter:  values[domain.SettingLDAPGroupFilter],
+		// Semicolon-, not comma-separated — a DN's own RDN components are
+		// comma-delimited (e.g. "cn=a,ou=b,dc=c"), so splitTrimmed (comma)
+		// would shred a single DN into bogus fragments. This is the exact
+		// gotcha CLAUDE.md's v1.4 LDAP section documents; splitSemicolon
+		// below is the portal-settings counterpart to config.go's
+		// optionalListSep(key, ";").
+		LDAPRoleMapEditor:    splitSemicolon(values[domain.SettingLDAPRoleMapEditor]),
+		LDAPRoleMapViewer:    splitSemicolon(values[domain.SettingLDAPRoleMapViewer]),
+		LDAPRoleMapRequester: splitSemicolon(values[domain.SettingLDAPRoleMapRequester]),
 	}
 	s.current.Store(&next)
 	return nil
@@ -150,6 +178,9 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 	if patch.ExpiryFinalDays > patch.ExpiryCriticalDays {
 		return domain.Invalid("expiry_final_days", "must be less than or equal to the critical threshold")
 	}
+	if err := validateLDAPPatch(patch); err != nil {
+		return err
+	}
 
 	values := map[string]string{
 		domain.SettingExpiryWarningDays:  strconv.Itoa(patch.ExpiryWarningDays),
@@ -163,11 +194,57 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 		domain.SettingAlertEmailTo:       strings.Join(patch.AlertEmailTo, ","),
 		domain.SettingTeamsWebhookURL:    strings.TrimSpace(patch.TeamsWebhookURL),
 		domain.SettingTicketSLADays:      strconv.Itoa(patch.TicketSLADays),
+
+		domain.SettingLDAPURL:          strings.TrimSpace(patch.LDAPURL),
+		domain.SettingLDAPBindDN:       strings.TrimSpace(patch.LDAPBindDN),
+		domain.SettingLDAPBindPassword: patch.LDAPBindPassword,
+		domain.SettingLDAPBaseDN:       strings.TrimSpace(patch.LDAPBaseDN),
+		domain.SettingLDAPUserFilter:   strings.TrimSpace(patch.LDAPUserFilter),
+		domain.SettingLDAPGroupFilter:  strings.TrimSpace(patch.LDAPGroupFilter),
+
+		domain.SettingLDAPRoleMapEditor:    strings.Join(patch.LDAPRoleMapEditor, ";"),
+		domain.SettingLDAPRoleMapViewer:    strings.Join(patch.LDAPRoleMapViewer, ";"),
+		domain.SettingLDAPRoleMapRequester: strings.Join(patch.LDAPRoleMapRequester, ";"),
 	}
 	if err := s.repo.SetMany(ctx, values, updatedBy); err != nil {
 		return err
 	}
 	return s.Reload(ctx)
+}
+
+// validateLDAPPatch enforces the same "if LDAPURL is set, these become
+// required" cross-field rule config.Load used to enforce at boot for the
+// old env-only fields (v1.4) — moved here for exactly the reason the
+// expiry-threshold check above already was in v1.5: once the portal governs
+// the live value, a bad *seed* shouldn't block boot forever, only a bad
+// *live edit* should be rejected. See CLAUDE.md's v1.8 locked decision.
+func validateLDAPPatch(patch domain.AppSettings) error {
+	url := strings.TrimSpace(patch.LDAPURL)
+	if url == "" {
+		return nil
+	}
+	required := map[string]string{
+		"LDAP bind DN":       patch.LDAPBindDN,
+		"LDAP bind password": patch.LDAPBindPassword,
+		"LDAP base DN":       patch.LDAPBaseDN,
+		"LDAP user filter":   patch.LDAPUserFilter,
+		"LDAP group filter":  patch.LDAPGroupFilter,
+	}
+	for label, v := range required {
+		if strings.TrimSpace(v) == "" {
+			return domain.Invalid("ldap", label+" is required when the LDAP URL is set")
+		}
+	}
+	if strings.Count(patch.LDAPUserFilter, "%s") != 1 {
+		return domain.Invalid("ldap_user_filter", "must contain exactly one %s placeholder")
+	}
+	if strings.Count(patch.LDAPGroupFilter, "%s") != 1 {
+		return domain.Invalid("ldap_group_filter", "must contain exactly one %s placeholder")
+	}
+	if len(patch.LDAPRoleMapEditor) == 0 && len(patch.LDAPRoleMapViewer) == 0 && len(patch.LDAPRoleMapRequester) == 0 {
+		return domain.Invalid("ldap_role_map", "at least one role mapping (editor, viewer, or requester) is required — otherwise every LDAP login would be denied")
+	}
+	return nil
 }
 
 // EncryptionKeyValue reads the current APP_ENCRYPTION_KEY value directly —
@@ -225,6 +302,25 @@ func splitTrimmed(raw string) []string {
 	}
 	var out []string
 	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitSemicolon is splitTrimmed's counterpart for LDAP role-map values,
+// which are DNs — a DN's own RDN components are comma-separated, so a
+// comma-based split would shred a single DN into bogus fragments (see
+// CLAUDE.md's v1.4 LDAP section). Matches config.go's optionalListSep(key,
+// ";") exactly.
+func splitSemicolon(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ";") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}

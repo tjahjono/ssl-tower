@@ -107,7 +107,10 @@ func TestRotateEncryptionKeyReencryptsCertificatesAndRootCAs(t *testing.T) {
 		t.Fatalf("create bare certificate: %v", err)
 	}
 
-	result, err := rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, "the-new-key-value")
+	var progressCalls [][2]int
+	result, err := rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, "the-new-key-value", func(done, total int) {
+		progressCalls = append(progressCalls, [2]int{done, total})
+	})
 	if err != nil {
 		t.Fatalf("RotateEncryptionKey: %v", err)
 	}
@@ -116,6 +119,27 @@ func TestRotateEncryptionKeyReencryptsCertificatesAndRootCAs(t *testing.T) {
 	}
 	if result.RootCAsReencrypted != 1 {
 		t.Fatalf("RootCAsReencrypted = %d, want 1", result.RootCAsReencrypted)
+	}
+
+	// Two real key-bearing rows (the bare certificate has none): the very
+	// first call must report the total up front (0, 2), and the last call
+	// must report completion (2, 2) — with every done value in between
+	// non-decreasing, since progress only ever moves forward within one
+	// rotation.
+	if len(progressCalls) < 3 {
+		t.Fatalf("expected at least 3 progress calls (initial total + one per row), got %d: %v", len(progressCalls), progressCalls)
+	}
+	if progressCalls[0] != [2]int{0, 2} {
+		t.Fatalf("first progress call = %v, want [0 2]", progressCalls[0])
+	}
+	last := progressCalls[len(progressCalls)-1]
+	if last != [2]int{2, 2} {
+		t.Fatalf("last progress call = %v, want [2 2]", last)
+	}
+	for i := 1; i < len(progressCalls); i++ {
+		if progressCalls[i][0] < progressCalls[i-1][0] {
+			t.Fatalf("progress went backwards: %v then %v", progressCalls[i-1], progressCalls[i])
+		}
 	}
 
 	gotCert, err := certRepo.GetByID(ctx, cert.ID)
@@ -195,7 +219,7 @@ func TestRotateEncryptionKeyRollsBackOnDecryptFailure(t *testing.T) {
 		t.Fatalf("create bad certificate: %v", err)
 	}
 
-	if _, err := rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, "should-never-be-persisted"); err == nil {
+	if _, err := rotationRepo.RotateEncryptionKey(ctx, oldSealer, newSealer, "should-never-be-persisted", nil); err == nil {
 		t.Fatal("expected RotateEncryptionKey to fail when a row can't be decrypted under oldSealer")
 	}
 

@@ -222,6 +222,40 @@ func (s *Server) handleRootCAUpload(w http.ResponseWriter, r *http.Request) {
 	s.rootCASectionResponse(w, r, &flashMessage{Kind: "success", Message: fmt.Sprintf("%q uploaded — it's now available to sign pending certificates.", ca.Name)})
 }
 
+// handleRootCAGenerate mints a brand-new self-signed Root CA key pair and
+// certificate entirely in-app — the generate-it-yourself sibling of
+// handleRootCAUpload, for an admin who doesn't already hold a CA to paste in.
+func (s *Server) handleRootCAGenerate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	bits, _ := strconv.Atoi(r.PostFormValue("key_bits"))
+	validDays, _ := strconv.Atoi(r.PostFormValue("valid_days"))
+	subject := certutil.Subject{
+		CommonName:         r.PostFormValue("common_name"),
+		Organization:       r.PostFormValue("organization"),
+		OrganizationalUnit: r.PostFormValue("organizational_unit"),
+		Country:            r.PostFormValue("country"),
+		Province:           r.PostFormValue("province"),
+		Locality:           r.PostFormValue("locality"),
+		Email:              r.PostFormValue("email"),
+	}
+	spec := certutil.KeySpec{
+		Algorithm: r.PostFormValue("key_algorithm"),
+		Bits:      bits,
+		Curve:     r.PostFormValue("key_curve"),
+	}
+	ca, err := s.certs.GenerateRootCA(r.Context(), r.PostFormValue("name"), subject, spec, validDays)
+	if err != nil {
+		msg, _ := errorMessage(err)
+		s.rootCASectionResponse(w, r, &flashMessage{Kind: "error", Message: msg})
+		return
+	}
+	s.recordAudit(r, domain.AuditRootCAGenerated, "root_ca", ca.ID.String(), ca.Name)
+	s.rootCASectionResponse(w, r, &flashMessage{Kind: "success", Message: fmt.Sprintf("%q generated — it's now available to sign pending certificates.", ca.Name)})
+}
+
 // handleRootCADelete removes an uploaded Root CA. Certificates it already
 // signed are unaffected — see the root_cas migration's ON DELETE SET NULL.
 func (s *Server) handleRootCADelete(w http.ResponseWriter, r *http.Request) {
@@ -514,8 +548,20 @@ func (s *Server) handleCertificateValidate(w http.ResponseWriter, r *http.Reques
 	s.certificateDetailResponse(w, r, id, flash)
 }
 
-// handleCertificateSelfSign issues a self-signed certificate for a pending request.
-func (s *Server) handleCertificateSelfSign(w http.ResponseWriter, r *http.Request) {
+// handleCertificateIssue is the single entry point for turning a pending
+// (generated, not-yet-issued) certificate into an issued one from inside
+// the app — the pending-certificate section on its detail page offers one
+// form with one "Sign with" dropdown (v1.9; previously two separate forms,
+// self-sign and sign-with-an-existing-Root-CA, side by side, which read as
+// confusing rather than as two genuinely different actions). sign_action
+// drives which of three paths this dispatches to: "" or "self" self-signs
+// with the certificate's own key (CertificateService.SelfSign); "new"
+// generates a brand-new Root CA from the additional subject/key fields the
+// template only shows once "new" is selected, and signs with it in one
+// step (CertificateService.GenerateRootCAAndSign); anything else is parsed
+// as an existing Root CA's UUID (CertificateService.SignWithRootCA) — the
+// dropdown's own <option value="{{.ID}}"> for each uploaded CA.
+func (s *Server) handleCertificateIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
 		return
@@ -528,56 +574,86 @@ func (s *Server) handleCertificateSelfSign(w http.ResponseWriter, r *http.Reques
 	if days <= 0 {
 		days = 365
 	}
-	record, err := s.certs.SelfSign(r.Context(), id, days)
-	if err != nil {
-		msg, _ := errorMessage(err)
-		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
-		return
+
+	switch action := r.PostFormValue("sign_action"); action {
+	case "", "self":
+		record, err := s.certs.SelfSign(r.Context(), id, days)
+		if err != nil {
+			msg, _ := errorMessage(err)
+			s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+			return
+		}
+		s.recordAudit(r, domain.AuditCertificateSelfSigned, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
+		s.renderIssuedCertificate(w, r, record, &flashMessage{
+			Kind:    "success",
+			Message: fmt.Sprintf("Self-signed certificate issued for %d days. Browsers will not trust it — use it for staging only.", days),
+		})
+
+	case "new":
+		bits, _ := strconv.Atoi(r.PostFormValue("key_bits"))
+		caValidDays, _ := strconv.Atoi(r.PostFormValue("ca_valid_days"))
+		caName := r.PostFormValue("ca_name")
+		subject := certutil.Subject{
+			CommonName:         r.PostFormValue("common_name"),
+			Organization:       r.PostFormValue("organization"),
+			OrganizationalUnit: r.PostFormValue("organizational_unit"),
+			Country:            r.PostFormValue("country"),
+			Province:           r.PostFormValue("province"),
+			Locality:           r.PostFormValue("locality"),
+			Email:              r.PostFormValue("email"),
+		}
+		spec := certutil.KeySpec{
+			Algorithm: r.PostFormValue("key_algorithm"),
+			Bits:      bits,
+			Curve:     r.PostFormValue("key_curve"),
+		}
+		ca, record, err := s.certs.GenerateRootCAAndSign(r.Context(), id, caName, subject, spec, caValidDays, days)
+		if err != nil {
+			msg, _ := errorMessage(err)
+			s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+			return
+		}
+		// Two audit entries — a CA really was generated (regardless of
+		// whether signing with it then also succeeded, which it did to
+		// reach this line), then the certificate really was signed. Same
+		// pairing convention as a key download alongside a plain cert
+		// download elsewhere in this app: one action, two things happened,
+		// both get their own trail entry.
+		s.recordAudit(r, domain.AuditRootCAGenerated, "root_ca", ca.ID.String(), ca.Name)
+		s.recordAudit(r, domain.AuditCertificateSignedByCA, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
+		s.renderIssuedCertificate(w, r, record, &flashMessage{
+			Kind:    "success",
+			Message: fmt.Sprintf("%q generated and used to sign this certificate for %d days.", ca.Name, days),
+		})
+
+	default:
+		rootCAID, err := uuid.Parse(action)
+		if err != nil {
+			s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "choose a signing option"})
+			return
+		}
+		record, err := s.certs.SignWithRootCA(r.Context(), id, rootCAID, days)
+		if err != nil {
+			msg, _ := errorMessage(err)
+			s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+			return
+		}
+		s.recordAudit(r, domain.AuditCertificateSignedByCA, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
+		s.renderIssuedCertificate(w, r, record, &flashMessage{
+			Kind:    "success",
+			Message: fmt.Sprintf("Certificate issued for %d days, signed by your Root CA.", days),
+		})
 	}
-	s.recordAudit(r, domain.AuditCertificateSelfSigned, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
-	view := newView(r, "", "")
-	s.decorateCertificateView(r, view, record)
-	view["Flash"] = &flashMessage{
-		Kind:    "success",
-		Message: fmt.Sprintf("Self-signed certificate issued for %d days. Browsers will not trust it — use it for staging only.", days),
-	}
-	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 
-// handleCertificateSignWithRootCA issues a pending certificate using one of
-// this app's own uploaded Root CAs — the "Sign with Root CA" counterpart to
-// handleCertificateSelfSign, right next to it in the pending-certificate UI.
-func (s *Server) handleCertificateSignWithRootCA(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(w, r)
-	if !ok {
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	rootCAID, err := uuid.Parse(r.PostFormValue("root_ca_id"))
-	if err != nil {
-		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: "choose a Root CA to sign with"})
-		return
-	}
-	days, _ := strconv.Atoi(r.PostFormValue("days"))
-	if days <= 0 {
-		days = 365
-	}
-	record, err := s.certs.SignWithRootCA(r.Context(), id, rootCAID, days)
-	if err != nil {
-		msg, _ := errorMessage(err)
-		s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
-		return
-	}
-	s.recordAudit(r, domain.AuditCertificateSignedByCA, "certificate", record.ID.String(), fmt.Sprintf("%d days", days))
+// renderIssuedCertificate is the shared tail end of every
+// handleCertificateIssue branch above — build the detail view for the
+// now-issued record and render the same OOB-swap partial every other
+// certificate action on this page uses.
+func (s *Server) renderIssuedCertificate(w http.ResponseWriter, r *http.Request, record *domain.Certificate, flash *flashMessage) {
 	view := newView(r, "", "")
 	s.decorateCertificateView(r, view, record)
-	view["Flash"] = &flashMessage{
-		Kind:    "success",
-		Message: fmt.Sprintf("Certificate issued for %d days, signed by your Root CA.", days),
-	}
+	view["Flash"] = flash
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
 }
 

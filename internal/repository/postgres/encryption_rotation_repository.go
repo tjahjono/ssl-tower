@@ -30,6 +30,16 @@ func NewEncryptionRotationRepository(pool *pgxpool.Pool) *EncryptionRotationRepo
 
 var _ domain.EncryptionRotationRepository = (*EncryptionRotationRepository)(nil)
 
+// keyRow is one private-key-bearing row queued for re-encryption, tagged
+// with which table it came from so the update loop can write it back to the
+// right place after both tables have been read.
+type keyRow struct {
+	table     string
+	id        uuid.UUID
+	pem       string
+	encrypted bool
+}
+
 // RotateEncryptionKey re-encrypts every certificates.private_key_pem and
 // root_cas.private_key_pem row that actually holds a key (an empty string
 // means "never held one" — see Certificate.HasPrivateKey/RootCA.HasPrivateKey)
@@ -39,7 +49,15 @@ var _ domain.EncryptionRotationRepository = (*EncryptionRotationRepository)(nil)
 // what's stored) aborts and rolls back the entire operation: nothing is
 // left partially re-encrypted, and the key in app_settings is never updated
 // unless every row succeeded.
-func (r *EncryptionRotationRepository) RotateEncryptionKey(ctx context.Context, oldSealer, newSealer *secret.Sealer, newKeyValue string) (domain.RotationResult, error) {
+//
+// Both tables are read (and FOR UPDATE locked) up front so the combined
+// total is known before any row is rewritten — that's what lets progress
+// report a meaningful "N of M" from its very first call rather than
+// guessing at a total that grows as it goes.
+func (r *EncryptionRotationRepository) RotateEncryptionKey(ctx context.Context, oldSealer, newSealer *secret.Sealer, newKeyValue string, progress func(done, total int)) (domain.RotationResult, error) {
+	if progress == nil {
+		progress = func(int, int) {}
+	}
 	var result domain.RotationResult
 
 	tx, err := r.pool.Begin(ctx)
@@ -48,14 +66,34 @@ func (r *EncryptionRotationRepository) RotateEncryptionKey(ctx context.Context, 
 	}
 	defer tx.Rollback(ctx)
 
-	result.CertificatesReencrypted, err = reencryptTable(ctx, tx, "certificates", oldSealer, newSealer)
+	certRows, err := lockKeyRows(ctx, tx, "certificates")
 	if err != nil {
 		return domain.RotationResult{}, fmt.Errorf("encryption rotation: certificates: %w", err)
 	}
-	result.RootCAsReencrypted, err = reencryptTable(ctx, tx, "root_cas", oldSealer, newSealer)
+	rootRows, err := lockKeyRows(ctx, tx, "root_cas")
 	if err != nil {
 		return domain.RotationResult{}, fmt.Errorf("encryption rotation: root cas: %w", err)
 	}
+
+	total := len(certRows) + len(rootRows)
+	progress(0, total)
+
+	done := 0
+	if err := reencryptRows(ctx, tx, certRows, oldSealer, newSealer, func() {
+		done++
+		progress(done, total)
+	}); err != nil {
+		return domain.RotationResult{}, fmt.Errorf("encryption rotation: certificates: %w", err)
+	}
+	result.CertificatesReencrypted = len(certRows)
+
+	if err := reencryptRows(ctx, tx, rootRows, oldSealer, newSealer, func() {
+		done++
+		progress(done, total)
+	}); err != nil {
+		return domain.RotationResult{}, fmt.Errorf("encryption rotation: root cas: %w", err)
+	}
+	result.RootCAsReencrypted = len(rootRows)
 
 	const settingsQ = `INSERT INTO app_settings (key, value, updated_by, updated_at)
 		VALUES ($1, $2, 'encryption key rotation', now())
@@ -70,50 +108,49 @@ func (r *EncryptionRotationRepository) RotateEncryptionKey(ctx context.Context, 
 	return result, nil
 }
 
-// reencryptTable re-encrypts one table's private_key_pem column. table is
-// always one of the two literal names above, never user input, so building
-// the query with fmt.Sprintf here carries no injection risk.
-func reencryptTable(ctx context.Context, tx pgx.Tx, table string, oldSealer, newSealer *secret.Sealer) (int, error) {
-	// FOR UPDATE locks every matching row for the rest of this transaction,
-	// so a concurrent write to a certificate's private key mid-rotation
-	// can't race with this read-decrypt-reencrypt-write cycle.
+// lockKeyRows reads and FOR-UPDATE-locks one table's key-bearing rows
+// without modifying them yet — table is always one of the two literal names
+// above, never user input, so building the query with fmt.Sprintf here
+// carries no injection risk.
+func lockKeyRows(ctx context.Context, tx pgx.Tx, table string) ([]keyRow, error) {
 	rows, err := tx.Query(ctx, fmt.Sprintf(
 		`SELECT id, private_key_pem, private_key_encrypted FROM %s WHERE private_key_pem <> '' FOR UPDATE`, table))
 	if err != nil {
-		return 0, fmt.Errorf("select: %w", err)
+		return nil, fmt.Errorf("select: %w", err)
 	}
-	type keyRow struct {
-		id        uuid.UUID
-		pem       string
-		encrypted bool
-	}
-	var toUpdate []keyRow
+	defer rows.Close()
+	var out []keyRow
 	for rows.Next() {
-		var row keyRow
+		row := keyRow{table: table}
 		if err := rows.Scan(&row.id, &row.pem, &row.encrypted); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan: %w", err)
+			return nil, fmt.Errorf("scan: %w", err)
 		}
-		toUpdate = append(toUpdate, row)
+		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
 	}
-	rows.Close()
+	return out, nil
+}
 
-	updateQ := fmt.Sprintf(`UPDATE %s SET private_key_pem = $1, private_key_encrypted = $2, updated_at = now() WHERE id = $3`, table)
-	for _, row := range toUpdate {
+// reencryptRows decrypts each row under oldSealer and rewrites it under
+// newSealer, calling onRow after each successful write — the hook progress
+// reporting rides on.
+func reencryptRows(ctx context.Context, tx pgx.Tx, rows []keyRow, oldSealer, newSealer *secret.Sealer, onRow func()) error {
+	for _, row := range rows {
 		plaintext, err := oldSealer.Open(row.pem, row.encrypted)
 		if err != nil {
-			return 0, fmt.Errorf("%s: decrypt with current key: %w", row.id, err)
+			return fmt.Errorf("%s: decrypt with current key: %w", row.id, err)
 		}
 		sealed, err := newSealer.Seal(plaintext)
 		if err != nil {
-			return 0, fmt.Errorf("%s: encrypt with new key: %w", row.id, err)
+			return fmt.Errorf("%s: encrypt with new key: %w", row.id, err)
 		}
+		updateQ := fmt.Sprintf(`UPDATE %s SET private_key_pem = $1, private_key_encrypted = $2, updated_at = now() WHERE id = $3`, row.table)
 		if _, err := tx.Exec(ctx, updateQ, sealed, newSealer.Enabled(), row.id); err != nil {
-			return 0, fmt.Errorf("%s: write: %w", row.id, err)
+			return fmt.Errorf("%s: write: %w", row.id, err)
 		}
+		onRow()
 	}
-	return len(toUpdate), nil
+	return nil
 }

@@ -43,9 +43,9 @@ type Config struct {
 	// was ever configured through /settings either — an operator who wants
 	// specific starting values still sets these in .env before the first
 	// boot, exactly as before, but is no longer required to.
-	ExpiryWarningDays int
+	ExpiryWarningDays  int
 	ExpiryCriticalDays int
-	ExpiryFinalDays int
+	ExpiryFinalDays    int
 	// ExpiryWarningPercent and ExpiryCriticalPercent are the percent-of-
 	// total-lifetime-remaining counterparts to ExpiryWarningDays/
 	// ExpiryCriticalDays — whichever of the two (absolute days, or percent
@@ -61,7 +61,7 @@ type Config struct {
 	// domain.Certificate.HealthStatus's doc comment for the full reasoning
 	// and a worked example. Required, not defaulted, same as the day-based
 	// thresholds above.
-	ExpiryWarningPercent int
+	ExpiryWarningPercent  int
 	ExpiryCriticalPercent int
 
 	// EncryptionKey (base64 std encoding, 32 bytes) is, as of v1.5, only the
@@ -145,16 +145,21 @@ type Config struct {
 	// ships the current documented value to copy as-is.
 	DigiCertBaseURL string
 
-	// LDAPURL enables LDAP authentication — e.g. "ldap://ldap.example.com:389"
-	// or "ldaps://ldap.example.com:636". Optional by design, same "empty =
-	// off" convention as DigiCertAPIKey above: empty means every account
-	// authenticates with a local password exactly as before this feature
-	// existed. Once set, LDAPBindDN/LDAPBindPassword/LDAPBaseDN/
-	// LDAPUserFilter/LDAPGroupFilter become required — see the cross-field
-	// check in Load. See CLAUDE.md's LDAP locked decisions for the
-	// authentication model this enables: admin accounts keep using a local
-	// password regardless of this setting; every other role authenticates
-	// via LDAP once it's set.
+	// LDAP settings (v1.8: portal-editable from /settings — these fields are
+	// now only a first-boot SEED, exactly like ExpiryWarningDays and the
+	// other settings SettingsService.Bootstrap seeds; see that type's doc
+	// comment). LDAPURL is the "empty = off" toggle: empty means every
+	// account authenticates with a local password exactly as before this
+	// feature existed. Once set (here, as a seed, or later from the
+	// portal), LDAPBindDN/LDAPBindPassword/LDAPBaseDN/LDAPUserFilter/
+	// LDAPGroupFilter become required and at least one role mapping must be
+	// non-empty — enforced by SettingsService.Update on a live edit, not
+	// here on a boot-time seed (a bad seed shouldn't block boot once the
+	// portal is what actually governs the live value from the second boot
+	// onward). See CLAUDE.md's LDAP locked decisions for the authentication
+	// model this enables: admin accounts keep using a local password
+	// regardless of this setting; every other role authenticates via LDAP
+	// once it's set.
 	LDAPURL string
 	// LDAPBindDN and LDAPBindPassword are the service account LDAPClient
 	// uses to search the directory — never an end user's own credentials.
@@ -303,29 +308,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: DIGICERT_BASE_URL is required when DIGICERT_API_KEY is set")
 	}
 
-	if cfg.LDAPURL != "" {
-		required := map[string]string{
-			"LDAP_BIND_DN":       cfg.LDAPBindDN,
-			"LDAP_BIND_PASSWORD": cfg.LDAPBindPassword,
-			"LDAP_BASE_DN":       cfg.LDAPBaseDN,
-			"LDAP_USER_FILTER":   cfg.LDAPUserFilter,
-			"LDAP_GROUP_FILTER":  cfg.LDAPGroupFilter,
-		}
-		for key, v := range required {
-			if v == "" {
-				return nil, fmt.Errorf("config: %s is required when LDAP_URL is set", key)
-			}
-		}
-		if strings.Count(cfg.LDAPUserFilter, "%s") != 1 {
-			return nil, fmt.Errorf("config: LDAP_USER_FILTER must contain exactly one %%s placeholder")
-		}
-		if strings.Count(cfg.LDAPGroupFilter, "%s") != 1 {
-			return nil, fmt.Errorf("config: LDAP_GROUP_FILTER must contain exactly one %%s placeholder")
-		}
-		if len(cfg.LDAPRoleMapEditor) == 0 && len(cfg.LDAPRoleMapViewer) == 0 && len(cfg.LDAPRoleMapRequester) == 0 {
-			return nil, fmt.Errorf("config: LDAP_URL is set but none of LDAP_ROLE_MAP_EDITOR/VIEWER/REQUESTER configure a role mapping — every LDAP login would be denied and logged; set at least one")
-		}
-	}
+	// LDAP_URL's own cross-field check (the other LDAP_* fields required
+	// once it's set, filter placeholder counts, at least one role mapping)
+	// moved to service.SettingsService.Update, the same v1.8 move the
+	// EXPIRY_*_DAYS check just below made in v1.5 — these are only a
+	// first-boot seed now (see the Config field doc comments above), and a
+	// bad seed value shouldn't block boot when the portal is what actually
+	// governs the live LDAP configuration from the second boot onward.
 
 	// EXPIRY_*_DAYS's own cross-field check (critical <= warning, final <=
 	// critical) moved to service.SettingsService.Update — these are only a

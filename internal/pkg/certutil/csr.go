@@ -421,6 +421,61 @@ func SelfSign(csr *x509.CertificateRequest, key crypto.Signer, validDays int, ek
 	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
 }
 
+// GenerateRootCA mints a brand-new self-signed Root CA key pair and
+// certificate from a subject and key spec, with no CSR intermediate step —
+// used when the vault mints its own Root CA in-app rather than an admin
+// uploading one they already hold elsewhere (UploadRootCA). Unlike SelfSign
+// (which self-signs a *leaf*, still useful as its own trust anchor while
+// waiting on a real CA), this has no ExtKeyUsage at all: a root's job is to
+// sign other certificates, not to authenticate as a TLS endpoint itself, so
+// there is no server/client-auth usage to request. validDays <= 0 defaults
+// to 10 years, reflecting how long-lived a root is expected to be — much
+// longer than SelfSign/SignWithCA's 365-day default for a leaf.
+func GenerateRootCA(subject Subject, spec KeySpec, validDays int) (cert *x509.Certificate, certPEM string, key crypto.Signer, err error) {
+	subject.CommonName = strings.TrimSpace(subject.CommonName)
+	if subject.CommonName == "" {
+		return nil, "", nil, errors.New("common name is required")
+	}
+	if len(subject.Country) > 0 && len(subject.Country) != 2 {
+		return nil, "", nil, errors.New("country must be a two letter ISO code")
+	}
+	spec, err = spec.Normalize()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if validDays <= 0 {
+		validDays = 3650
+	}
+
+	key, err = GenerateKey(spec)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("certutil: generate key: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("certutil: serial: %w", err)
+	}
+	now := time.Now().UTC()
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               subject.pkixName(),
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.AddDate(0, 0, validDays),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("certutil: generate root ca: %w", err)
+	}
+	cert, err = x509.ParseCertificate(der)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("certutil: parse generated root ca: %w", err)
+	}
+	return cert, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), key, nil
+}
+
 // SignWithCA issues a certificate for csr, signed by caCert using caKey — the
 // internal-CA counterpart to SelfSign, used when an admin has uploaded a
 // Root CA to sign with instead of self-signing. Unlike a self-signed leaf

@@ -20,7 +20,8 @@
   </div>
 
   <section id="new-request" class="hidden rounded-xl border border-line/5 bg-card/40 p-5">
-    <form hx-post="/requests" hx-target="#request-table" hx-swap="outerHTML" class="space-y-5">
+    <form hx-post="/requests" hx-target="#request-table" hx-swap="outerHTML" class="space-y-5"
+          data-reset data-hide-on-success="new-request">
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <span class="field-label mb-1 block">Request type</span>

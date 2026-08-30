@@ -179,6 +179,142 @@ func TestUpdateRejectsFinalDaysAboveCriticalDays(t *testing.T) {
 	}
 }
 
+// validLDAPPatch is a minimally valid AppSettings patch for LDAP-focused
+// Update tests — non-LDAP fields are set to values that pass the other
+// cross-field checks so a test only has to vary LDAP fields.
+func validLDAPPatch() domain.AppSettings {
+	return domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3,
+		LDAPURL:    "ldap://ldap.example.com:389",
+		LDAPBindDN: "cn=svc,dc=example,dc=com", LDAPBindPassword: "svcpass",
+		LDAPBaseDN:        "dc=example,dc=com",
+		LDAPUserFilter:    "(mail=%s)",
+		LDAPGroupFilter:   "(&(objectClass=groupOfNames)(member=%s))",
+		LDAPRoleMapEditor: []string{"cn=editors,ou=groups,dc=example,dc=com"},
+	}
+}
+
+func TestUpdateAcceptsValidLDAPConfig(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	if err := svc.Update(context.Background(), validLDAPPatch(), "admin@example.com"); err != nil {
+		t.Fatalf("Update: unexpected error with a fully valid LDAP config: %v", err)
+	}
+	cur := svc.Current()
+	if cur.LDAPURL != "ldap://ldap.example.com:389" {
+		t.Fatalf("LDAPURL = %q, want the saved value", cur.LDAPURL)
+	}
+	if len(cur.LDAPRoleMapEditor) != 1 || cur.LDAPRoleMapEditor[0] != "cn=editors,ou=groups,dc=example,dc=com" {
+		t.Fatalf("LDAPRoleMapEditor = %v, want a single parsed DN", cur.LDAPRoleMapEditor)
+	}
+}
+
+func TestUpdateRejectsLDAPMissingRequiredField(t *testing.T) {
+	fields := map[string]func(*domain.AppSettings){
+		"LDAPBindDN":       func(p *domain.AppSettings) { p.LDAPBindDN = "" },
+		"LDAPBindPassword": func(p *domain.AppSettings) { p.LDAPBindPassword = "" },
+		"LDAPBaseDN":       func(p *domain.AppSettings) { p.LDAPBaseDN = "" },
+		"LDAPUserFilter":   func(p *domain.AppSettings) { p.LDAPUserFilter = "" },
+		"LDAPGroupFilter":  func(p *domain.AppSettings) { p.LDAPGroupFilter = "" },
+	}
+	for name, clear := range fields {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeSettingsRepository()
+			svc := NewSettingsService(repo, discardLogger())
+			if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+				t.Fatalf("Bootstrap: %v", err)
+			}
+			patch := validLDAPPatch()
+			clear(&patch)
+
+			err := svc.Update(context.Background(), patch, "admin@example.com")
+			if _, ok := domain.AsValidation(err); !ok {
+				t.Fatalf("Update: expected a ValidationError with %s cleared while LDAPURL is set, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestUpdateRejectsLDAPFilterWithoutPlaceholder(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	patch := validLDAPPatch()
+	patch.LDAPUserFilter = "(mail=nobody@example.com)"
+
+	err := svc.Update(context.Background(), patch, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError for a user filter with no placeholder, got %v", err)
+	}
+}
+
+func TestUpdateRejectsLDAPWithNoRoleMappingConfigured(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	patch := validLDAPPatch()
+	patch.LDAPRoleMapEditor = nil
+
+	err := svc.Update(context.Background(), patch, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError when no role mapping would ever let a login succeed, got %v", err)
+	}
+}
+
+func TestUpdateWithoutLDAPURLIgnoresOtherLDAPFields(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// LDAPURL left empty — the "empty = off" toggle — even though nothing
+	// else LDAP-related is set either.
+	patch := domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3}
+	if err := svc.Update(context.Background(), patch, "admin@example.com"); err != nil {
+		t.Fatalf("Update: expected no error with LDAPURL empty, got %v", err)
+	}
+}
+
+// TestSettingsReloadSplitsLDAPRoleMapsOnSemicolonNotComma guards against the
+// exact gotcha CLAUDE.md's v1.4 LDAP section documents: a DN's own RDN
+// components are comma-separated, so a comma-based split would shred one DN
+// into bogus fragments.
+func TestSettingsReloadSplitsLDAPRoleMapsOnSemicolonNotComma(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	patch := validLDAPPatch()
+	patch.LDAPRoleMapEditor = []string{
+		"cn=sslgen-editors,ou=groups,dc=example,dc=com",
+		"cn=platform-team,ou=groups,dc=example,dc=com",
+	}
+	if err := svc.Update(context.Background(), patch, "admin@example.com"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	cur := svc.Current()
+	want := []string{"cn=sslgen-editors,ou=groups,dc=example,dc=com", "cn=platform-team,ou=groups,dc=example,dc=com"}
+	if len(cur.LDAPRoleMapEditor) != len(want) {
+		t.Fatalf("LDAPRoleMapEditor = %v, want %v", cur.LDAPRoleMapEditor, want)
+	}
+	for i, dn := range want {
+		if cur.LDAPRoleMapEditor[i] != dn {
+			t.Fatalf("LDAPRoleMapEditor[%d] = %q, want %q — a comma-based split would have shredded these DNs", i, cur.LDAPRoleMapEditor[i], dn)
+		}
+	}
+}
+
 func TestUpdateTakesEffectImmediatelyOnCurrent(t *testing.T) {
 	repo := newFakeSettingsRepository()
 	svc := NewSettingsService(repo, discardLogger())

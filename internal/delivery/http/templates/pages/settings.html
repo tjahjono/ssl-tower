@@ -127,10 +127,90 @@
       </div>
     </section>
 
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">LDAP authentication</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          Leave the URL empty to keep every account on a local password. Once set, every non-admin
+          account signs in against this directory instead — admin accounts always stay local. A saved
+          change here takes effect on the very next login, no restart needed.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="sm:col-span-2">
+          <label for="ldap_url" class="field-label mb-1 block">LDAP URL</label>
+          <input id="ldap_url" name="ldap_url" type="text" placeholder="ldaps://ldap.example.com:636" autocomplete="off"
+                 value="{{.Settings.LDAPURL}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="ldap_bind_dn" class="field-label mb-1 block">Bind DN</label>
+          <input id="ldap_bind_dn" name="ldap_bind_dn" type="text" autocomplete="off"
+                 placeholder="cn=service-account,dc=example,dc=com"
+                 value="{{.Settings.LDAPBindDN}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="ldap_bind_password" class="field-label mb-1 block">Bind password</label>
+          <input id="ldap_bind_password" name="ldap_bind_password" type="password" autocomplete="new-password"
+                 placeholder="{{if hasValue .Settings.LDAPBindPassword}}•••• leave blank to keep current{{else}}not set{{end}}"
+                 class="field-input w-full px-3 py-2 text-sm">
+          <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
+            <input type="checkbox" name="ldap_bind_password_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+            Clear the stored password
+          </label>
+        </div>
+        <div class="sm:col-span-2">
+          <label for="ldap_base_dn" class="field-label mb-1 block">Base DN</label>
+          <input id="ldap_base_dn" name="ldap_base_dn" type="text" autocomplete="off"
+                 placeholder="dc=example,dc=com"
+                 value="{{.Settings.LDAPBaseDN}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="ldap_user_filter" class="field-label mb-1 block">User filter</label>
+          <input id="ldap_user_filter" name="ldap_user_filter" type="text" autocomplete="off"
+                 placeholder="(&(objectClass=person)(mail=%s))"
+                 value="{{.Settings.LDAPUserFilter}}" class="field-input w-full px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-ink-6">Exactly one <code>%s</code> placeholder, filled in with the email typed at login.</p>
+        </div>
+        <div>
+          <label for="ldap_group_filter" class="field-label mb-1 block">Group filter</label>
+          <input id="ldap_group_filter" name="ldap_group_filter" type="text" autocomplete="off"
+                 placeholder="(&(objectClass=groupOfNames)(member=%s))"
+                 value="{{.Settings.LDAPGroupFilter}}" class="field-input w-full px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-ink-6">Exactly one <code>%s</code> placeholder, filled in with the user's DN.</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label for="ldap_role_map_editor" class="field-label mb-1 block">Editor groups</label>
+          <textarea id="ldap_role_map_editor" name="ldap_role_map_editor" rows="3" spellcheck="false"
+                    placeholder="cn=editors,ou=groups,dc=example,dc=com"
+                    class="field-input w-full px-3 py-2 text-sm font-mono text-xs">{{.LDAPRoleMapEditorText}}</textarea>
+        </div>
+        <div>
+          <label for="ldap_role_map_viewer" class="field-label mb-1 block">Viewer groups</label>
+          <textarea id="ldap_role_map_viewer" name="ldap_role_map_viewer" rows="3" spellcheck="false"
+                    placeholder="cn=viewers,ou=groups,dc=example,dc=com"
+                    class="field-input w-full px-3 py-2 text-sm font-mono text-xs">{{.LDAPRoleMapViewerText}}</textarea>
+        </div>
+        <div>
+          <label for="ldap_role_map_requester" class="field-label mb-1 block">Requester groups</label>
+          <textarea id="ldap_role_map_requester" name="ldap_role_map_requester" rows="3" spellcheck="false"
+                    placeholder="cn=requesters,ou=groups,dc=example,dc=com"
+                    class="field-input w-full px-3 py-2 text-sm font-mono text-xs">{{.LDAPRoleMapRequesterText}}</textarea>
+        </div>
+      </div>
+      <p class="text-xs text-ink-6">
+        One group DN per line. Checked most-privileged first (editor, then viewer, then requester) —
+        the first matching group wins. At least one of the three lists must be filled in once the URL
+        is set, or every LDAP login would be denied. There is no admin group mapping: admin is always
+        a local account, never LDAP-derived.
+      </p>
+    </section>
+
     <button type="submit" class="btn-primary px-4 py-2 text-sm">Save settings</button>
   </form>
 
-  {{template "settings-encryption-section" .}}
+  <div id="settings-encryption-section">{{template "settings-encryption-section" .}}</div>
 
 </div>
 {{end}}

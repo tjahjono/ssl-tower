@@ -32,6 +32,7 @@ const (
 	AuditCertificateChainEdited = "certificate_chain_edited"
 	AuditCertificateSignedByCA  = "certificate_signed_by_root_ca"
 	AuditRootCAUploaded         = "root_ca_uploaded"
+	AuditRootCAGenerated        = "root_ca_generated"
 	AuditRootCADeleted          = "root_ca_deleted"
 	AuditCertificateRenewed     = "certificate_renewed"
 
