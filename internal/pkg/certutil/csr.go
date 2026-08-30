@@ -28,11 +28,30 @@ const (
 	EKUEmailProtection = "email_protection"
 	EKUTimeStamping    = "timestamping"
 	EKUOCSPSigning     = "ocsp_signing"
+	// The seven below were added on top of the original six: EKUAny and the
+	// three IPSec purposes map onto x509.ExtKeyUsage constants the standard
+	// library already defines (see ekuToX509). EKUSmartCardLogon,
+	// EKUDocumentSigning, and EKUEFS have no such constant — Go's
+	// x509.ExtKeyUsage enum simply doesn't cover them — so they're carried as
+	// raw OIDs via x509.Certificate's UnknownExtKeyUsage field instead (see
+	// ekuUnknownOIDs and x509ExtKeyUsages). Every key here still has an entry
+	// in ekuOIDs regardless, since a CSR's extension-request attribute is
+	// OID-based from the start and never used the enum.
+	EKUAny             = "any"
+	EKUIPSECEndSystem  = "ipsec_end_system"
+	EKUIPSECTunnel     = "ipsec_tunnel"
+	EKUIPSECUser       = "ipsec_user"
+	EKUSmartCardLogon  = "smart_card_logon"
+	EKUDocumentSigning = "document_signing"
+	EKUEFS             = "efs"
 )
 
 // ekuOrder is the canonical display/encoding order for every EKU-keyed slice
 // this package produces, independent of map iteration or user input order.
-var ekuOrder = []string{EKUServerAuth, EKUClientAuth, EKUCodeSigning, EKUEmailProtection, EKUTimeStamping, EKUOCSPSigning}
+var ekuOrder = []string{
+	EKUServerAuth, EKUClientAuth, EKUCodeSigning, EKUEmailProtection, EKUTimeStamping, EKUOCSPSigning,
+	EKUAny, EKUIPSECEndSystem, EKUIPSECTunnel, EKUIPSECUser, EKUSmartCardLogon, EKUDocumentSigning, EKUEFS,
+}
 
 var ekuLabels = map[string]string{
 	EKUServerAuth:      "Server Authentication",
@@ -41,8 +60,18 @@ var ekuLabels = map[string]string{
 	EKUEmailProtection: "Email Protection (S/MIME)",
 	EKUTimeStamping:    "Timestamping",
 	EKUOCSPSigning:     "OCSP Signing",
+	EKUAny:             "Any Extended Key Usage",
+	EKUIPSECEndSystem:  "IPSec End System",
+	EKUIPSECTunnel:     "IPSec Tunnel",
+	EKUIPSECUser:       "IPSec User",
+	EKUSmartCardLogon:  "Smart Card Logon",
+	EKUDocumentSigning: "Document Signing (Microsoft)",
+	EKUEFS:             "Encrypting File System (EFS)",
 }
 
+// ekuToX509 covers only the keys with a real x509.ExtKeyUsage constant in the
+// standard library. EKUSmartCardLogon/EKUDocumentSigning/EKUEFS are
+// deliberately absent — see ekuUnknownOIDs.
 var ekuToX509 = map[string]x509.ExtKeyUsage{
 	EKUServerAuth:      x509.ExtKeyUsageServerAuth,
 	EKUClientAuth:      x509.ExtKeyUsageClientAuth,
@@ -50,6 +79,10 @@ var ekuToX509 = map[string]x509.ExtKeyUsage{
 	EKUEmailProtection: x509.ExtKeyUsageEmailProtection,
 	EKUTimeStamping:    x509.ExtKeyUsageTimeStamping,
 	EKUOCSPSigning:     x509.ExtKeyUsageOCSPSigning,
+	EKUAny:             x509.ExtKeyUsageAny,
+	EKUIPSECEndSystem:  x509.ExtKeyUsageIPSECEndSystem,
+	EKUIPSECTunnel:     x509.ExtKeyUsageIPSECTunnel,
+	EKUIPSECUser:       x509.ExtKeyUsageIPSECUser,
 }
 
 var x509ToEKU = map[x509.ExtKeyUsage]string{
@@ -59,6 +92,22 @@ var x509ToEKU = map[x509.ExtKeyUsage]string{
 	x509.ExtKeyUsageEmailProtection: EKUEmailProtection,
 	x509.ExtKeyUsageTimeStamping:    EKUTimeStamping,
 	x509.ExtKeyUsageOCSPSigning:     EKUOCSPSigning,
+	x509.ExtKeyUsageAny:             EKUAny,
+	x509.ExtKeyUsageIPSECEndSystem:  EKUIPSECEndSystem,
+	x509.ExtKeyUsageIPSECTunnel:     EKUIPSECTunnel,
+	x509.ExtKeyUsageIPSECUser:       EKUIPSECUser,
+}
+
+// ekuUnknownOIDs holds the raw OID for every EKU key with no corresponding
+// x509.ExtKeyUsage constant in the standard library. These are carried on an
+// issued certificate via x509.Certificate's UnknownExtKeyUsage field rather
+// than its ExtKeyUsage field — x509.CreateCertificate merges both into the
+// same extended-key-usage extension, so from the outside the result looks
+// identical to any other requested EKU.
+var ekuUnknownOIDs = map[string]asn1.ObjectIdentifier{
+	EKUSmartCardLogon:  {1, 3, 6, 1, 4, 1, 311, 20, 2, 2},
+	EKUDocumentSigning: {1, 3, 6, 1, 4, 1, 311, 10, 3, 12},
+	EKUEFS:             {1, 3, 6, 1, 4, 1, 311, 10, 3, 4},
 }
 
 var ekuOIDs = map[string]asn1.ObjectIdentifier{
@@ -68,6 +117,13 @@ var ekuOIDs = map[string]asn1.ObjectIdentifier{
 	EKUEmailProtection: {1, 3, 6, 1, 5, 5, 7, 3, 4},
 	EKUTimeStamping:    {1, 3, 6, 1, 5, 5, 7, 3, 8},
 	EKUOCSPSigning:     {1, 3, 6, 1, 5, 5, 7, 3, 9},
+	EKUAny:             {2, 5, 29, 37, 0},
+	EKUIPSECEndSystem:  {1, 3, 6, 1, 5, 5, 7, 3, 5},
+	EKUIPSECTunnel:     {1, 3, 6, 1, 5, 5, 7, 3, 6},
+	EKUIPSECUser:       {1, 3, 6, 1, 5, 5, 7, 3, 7},
+	EKUSmartCardLogon:  {1, 3, 6, 1, 4, 1, 311, 20, 2, 2},
+	EKUDocumentSigning: {1, 3, 6, 1, 4, 1, 311, 10, 3, 12},
+	EKUEFS:             {1, 3, 6, 1, 4, 1, 311, 10, 3, 4},
 }
 
 // extKeyUsageExtOID is the standard X.509 extended-key-usage extension OID
@@ -148,20 +204,28 @@ func extKeyUsageExtension(keys []string) (pkix.Extension, error) {
 	return pkix.Extension{Id: extKeyUsageExtOID, Value: der}, nil
 }
 
-// x509ExtKeyUsages converts our keys to the standard library's enum, for
-// issuing a real certificate (self-sign). Falls back to the historical
+// x509ExtKeyUsages converts our keys to the standard library's enum plus,
+// for the handful with no built-in x509.ExtKeyUsage constant (Smart Card
+// Logon, Microsoft Document Signing, EFS), their raw OID for
+// x509.Certificate's UnknownExtKeyUsage field — x509.CreateCertificate
+// combines both into a single extended-key-usage extension when issuing, so
+// the two return values are meant to be set on ExtKeyUsage and
+// UnknownExtKeyUsage respectively. Falls back to the historical
 // server+client default when the input is empty.
-func x509ExtKeyUsages(keys []string) []x509.ExtKeyUsage {
+func x509ExtKeyUsages(keys []string) (known []x509.ExtKeyUsage, unknown []asn1.ObjectIdentifier) {
 	if len(keys) == 0 {
 		keys = defaultExtKeyUsages
 	}
-	out := make([]x509.ExtKeyUsage, 0, len(keys))
 	for _, k := range keys {
 		if eku, ok := ekuToX509[k]; ok {
-			out = append(out, eku)
+			known = append(known, eku)
+			continue
+		}
+		if oid, ok := ekuUnknownOIDs[k]; ok {
+			unknown = append(unknown, oid)
 		}
 	}
-	return out
+	return known, unknown
 }
 
 // DescribeRequestedExtKeyUsage reads the extended key usages a CSR itself
@@ -211,6 +275,13 @@ func DescribeExtKeyUsage(cert *x509.Certificate) []string {
 	for _, eku := range cert.ExtKeyUsage {
 		if k, ok := x509ToEKU[eku]; ok {
 			seen[k] = true
+		}
+	}
+	for _, oid := range cert.UnknownExtKeyUsage {
+		for k, want := range ekuUnknownOIDs {
+			if want.Equal(oid) {
+				seen[k] = true
+			}
 		}
 	}
 	out := make([]string, 0, len(seen))
@@ -397,6 +468,7 @@ func SelfSign(csr *x509.CertificateRequest, key crypto.Signer, validDays int, ek
 		return nil, "", fmt.Errorf("certutil: serial: %w", err)
 	}
 	now := time.Now().UTC()
+	knownEKU, unknownEKU := x509ExtKeyUsages(ekuKeys)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               csr.Subject,
@@ -406,7 +478,8 @@ func SelfSign(csr *x509.CertificateRequest, key crypto.Signer, validDays int, ek
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.AddDate(0, 0, validDays),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
-		ExtKeyUsage:           x509ExtKeyUsages(ekuKeys),
+		ExtKeyUsage:           knownEKU,
+		UnknownExtKeyUsage:    unknownEKU,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
@@ -497,6 +570,7 @@ func SignWithCA(csr *x509.CertificateRequest, caCert *x509.Certificate, caKey cr
 	if notAfter.After(caCert.NotAfter) {
 		notAfter = caCert.NotAfter
 	}
+	knownEKU, unknownEKU := x509ExtKeyUsages(ekuKeys)
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               csr.Subject,
@@ -506,7 +580,8 @@ func SignWithCA(csr *x509.CertificateRequest, caCert *x509.Certificate, caKey cr
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           x509ExtKeyUsages(ekuKeys),
+		ExtKeyUsage:           knownEKU,
+		UnknownExtKeyUsage:    unknownEKU,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}

@@ -116,6 +116,13 @@ func (n *EmailNotifier) deliver(to []string, msg []byte) error {
 	if n.cfg.Username != "" {
 		auth = smtp.PlainAuth("", n.cfg.Username, n.cfg.Password, n.cfg.Host)
 	}
+	// msg's raw header lines (From/To/Subject) are built by
+	// sanitizeHeaderValue (see buildMIME/buildMultipartMIME), which strips
+	// CR/LF before they ever reach a header line — this query's sink is the
+	// final composed message, so it can't see past that: dynamic content
+	// legitimately reaching the body (e.g. a certificate's common name) is
+	// expected and is not itself an injection.
+	// codeql[go/email-injection]
 	if err := smtp.SendMail(addr, auth, n.cfg.From, to, msg); err != nil {
 		return fmt.Errorf("notify: send email: %w", err)
 	}
@@ -155,6 +162,9 @@ func (n *EmailNotifier) sendImplicitTLS(addr string, to []string, msg []byte) er
 	if err != nil {
 		return fmt.Errorf("notify: smtp data: %w", err)
 	}
+	// Same reasoning as deliver's smtp.SendMail call above: msg's header
+	// lines are already sanitized by sanitizeHeaderValue before this point.
+	// codeql[go/email-injection]
 	if _, err := w.Write(msg); err != nil {
 		return fmt.Errorf("notify: smtp write: %w", err)
 	}
@@ -164,11 +174,25 @@ func (n *EmailNotifier) sendImplicitTLS(addr string, to []string, msg []byte) er
 	return client.Quit()
 }
 
+// sanitizeHeaderValue strips CR and LF from a value bound for a single raw
+// header line (From/To/Subject) — these are built by hand with fmt.Fprintf
+// rather than through net/textproto's own header-writing (which rejects
+// embedded newlines), so without this an attacker-controlled value
+// containing "\r\n" could inject additional headers (e.g. a Bcc) or smuggle
+// arbitrary content into the message (CWE-93/CWE-640 header injection). The
+// recipient and subject here can both trace back to untrusted input — an
+// admin-typed "send by email" recipient, or a certificate request's
+// requester-supplied common name — neither of which is otherwise validated
+// against control characters.
+func sanitizeHeaderValue(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
 func buildMIME(from string, to []string, subject, body string) []byte {
 	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&b, "From: %s\r\n", sanitizeHeaderValue(from))
+	fmt.Fprintf(&b, "To: %s\r\n", sanitizeHeaderValue(strings.Join(to, ", ")))
+	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeaderValue(subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
 	b.WriteString(body)
@@ -229,9 +253,9 @@ func buildMultipartMIME(from string, to []string, subject, body string, attachme
 	}
 
 	var msg bytes.Buffer
-	fmt.Fprintf(&msg, "From: %s\r\n", from)
-	fmt.Fprintf(&msg, "To: %s\r\n", strings.Join(to, ", "))
-	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
+	fmt.Fprintf(&msg, "From: %s\r\n", sanitizeHeaderValue(from))
+	fmt.Fprintf(&msg, "To: %s\r\n", sanitizeHeaderValue(strings.Join(to, ", ")))
+	fmt.Fprintf(&msg, "Subject: %s\r\n", sanitizeHeaderValue(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&msg, "Content-Type: multipart/mixed; boundary=%q\r\n", mw.Boundary())
 	msg.WriteString("\r\n")

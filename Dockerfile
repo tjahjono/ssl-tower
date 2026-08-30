@@ -1,6 +1,6 @@
 # Templates and static assets are embedded in the binary, so the runtime image
 # needs nothing but the executable and CA roots for chain verification.
-FROM golang:1.24-alpine AS build
+FROM golang:1.25.4-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -125,6 +126,31 @@ func TestSubmitBackfillsRenewalFieldsFromExistingCertificate(t *testing.T) {
 	}
 }
 
+// TestSubmitRejectsTrustClassMismatchWithExistingCertificate covers the
+// server-side guard added alongside the requests page's split internal/
+// external "certificate to renew" pickers: the two selects are only kept in
+// sync with the trust_class radio via CSS, so a tampered (or simply stale)
+// submission naming a certificate whose actual trust class disagrees with
+// the submitted trust_class must still be rejected.
+func TestSubmitRejectsTrustClassMismatchWithExistingCertificate(t *testing.T) {
+	reqs, certs := newTestCertificateRequestService(t)
+	existing, err := certs.CreateCSR(context.Background(), CreateCSRInput{CommonName: "internal-cert.example.com", KeyAlgorithm: "rsa", KeyBits: 2048, SelfSignDays: 30})
+	if err != nil {
+		t.Fatalf("CreateCSR (setup): %v", err)
+	}
+	if existing.TrustClass() != domain.TrustInternal {
+		t.Fatalf("setup: expected the self-signed certificate to be internal, got %q", existing.TrustClass())
+	}
+
+	_, err = reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestRenewal, TrustClass: domain.TrustExternal,
+		ExistingCertificateID: &existing.ID,
+	})
+	if err == nil {
+		t.Fatal("expected an error submitting a renewal whose trust class doesn't match the chosen certificate's actual trust class")
+	}
+}
+
 func TestApproveInternalSignsAndFulfillsInOneAction(t *testing.T) {
 	reqs, certs := newTestCertificateRequestService(t)
 	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
@@ -176,6 +202,104 @@ func TestApproveInternalRejectsExternalTicket(t *testing.T) {
 	_, _, err = reqs.ApproveInternal(context.Background(), ApproveInternalInput{TicketID: ticket.ID, ApproverID: uuid.New()})
 	if err == nil {
 		t.Fatal("expected an error approving an external ticket through the internal flow")
+	}
+}
+
+func TestApproveInternalReuseExistingCSRClonesKeyAndCSR(t *testing.T) {
+	reqs, certs := newTestCertificateRequestService(t)
+	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
+	ca, err := certs.UploadRootCA(context.Background(), "Acme Internal CA", caCertPEM, caKeyPEM)
+	if err != nil {
+		t.Fatalf("UploadRootCA: %v", err)
+	}
+
+	existing, err := certs.CreateCSR(context.Background(), CreateCSRInput{CommonName: "renew-me.example.com", KeyAlgorithm: "rsa", KeyBits: 2048})
+	if err != nil {
+		t.Fatalf("CreateCSR (setup): %v", err)
+	}
+	existing, err = certs.SignWithRootCA(context.Background(), existing.ID, ca.ID, 30)
+	if err != nil {
+		t.Fatalf("SignWithRootCA (setup): %v", err)
+	}
+
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), RequesterEmail: "dev@example.com",
+		Type: domain.RequestRenewal, TrustClass: domain.TrustInternal,
+		ExistingCertificateID: &existing.ID,
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	_, cert, err := reqs.ApproveInternal(context.Background(), ApproveInternalInput{
+		TicketID: ticket.ID, ApproverID: uuid.New(),
+		ReuseExistingCSR: true,
+		RootCAID:         ca.ID, Days: 30,
+	})
+	if err != nil {
+		t.Fatalf("ApproveInternal: %v", err)
+	}
+	if cert.ID == existing.ID {
+		t.Fatal("reusing a CSR must still create a brand-new certificate record, not mutate the original")
+	}
+	if cert.CSRPEM != existing.CSRPEM {
+		t.Error("cloned certificate's CSR PEM does not match the original")
+	}
+	oldKey, err := certs.PrivateKey(existing)
+	if err != nil {
+		t.Fatalf("PrivateKey (original): %v", err)
+	}
+	newKey, err := certs.PrivateKey(cert)
+	if err != nil {
+		t.Fatalf("PrivateKey (clone): %v", err)
+	}
+	if oldKey != newKey {
+		t.Error("reusing the CSR must reuse the exact same private key")
+	}
+	reloaded, err := certs.Get(context.Background(), existing.ID)
+	if err != nil {
+		t.Fatalf("Get (original, after clone): %v", err)
+	}
+	if reloaded.CSRPEM != existing.CSRPEM {
+		t.Error("the original certificate record must be left untouched")
+	}
+}
+
+func TestApproveInternalReuseExistingCSRRejectsNonRenewalTicket(t *testing.T) {
+	reqs, _ := newTestCertificateRequestService(t)
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestNew, TrustClass: domain.TrustInternal, CommonName: "new.example.com",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	_, _, err = reqs.ApproveInternal(context.Background(), ApproveInternalInput{
+		TicketID: ticket.ID, ApproverID: uuid.New(), ReuseExistingCSR: true, RootCAID: uuid.New(), Days: 30,
+	})
+	if err == nil {
+		t.Fatal("expected an error reusing a CSR on a non-renewal ticket")
+	}
+}
+
+func TestApproveInternalReuseExistingCSRRejectsWhenSourceHasNoKey(t *testing.T) {
+	reqs, certs := newTestCertificateRequestService(t)
+	caCertPEM, _ := buildTestRootCAPEMs(t)
+	existing, err := certs.Import(context.Background(), ImportInput{CertificatePEM: caCertPEM})
+	if err != nil {
+		t.Fatalf("Import (setup): %v", err)
+	}
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestRenewal, TrustClass: domain.TrustInternal,
+		ExistingCertificateID: &existing.ID,
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	_, _, err = reqs.ApproveInternal(context.Background(), ApproveInternalInput{
+		TicketID: ticket.ID, ApproverID: uuid.New(), ReuseExistingCSR: true, RootCAID: uuid.New(), Days: 30,
+	})
+	if err == nil {
+		t.Fatal("expected an error reusing a CSR from a certificate with no stored key")
 	}
 }
 
@@ -484,6 +608,62 @@ func TestGenerateCSRThenFulfillExternalAttachesToSameCertificate(t *testing.T) {
 // action is exclusive to external tickets — an internal ticket already has
 // its own "Approve & sign" path that mints and signs a certificate in one
 // step, with no separate CSR-generation stage.
+// TestGenerateCSRUsesFullSubjectAndEKUFields covers the field-parity fix:
+// GenerateCSRInput used to only take common name/organization/SANs/key
+// spec, silently dropping OU/country/province/locality/email/EKU even
+// though the vault's own "Generate a CSR" tab has always offered them.
+func TestGenerateCSRUsesFullSubjectAndEKUFields(t *testing.T) {
+	reqs, _ := newTestCertificateRequestService(t)
+	ticket, err := reqs.Submit(context.Background(), SubmitInput{
+		RequesterID: uuid.New(), Type: domain.RequestNew, TrustClass: domain.TrustExternal,
+		CommonName: "full-fields.example.com", PONumber: "PO-CSR-2",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if _, err := reqs.ApproveExternal(context.Background(), ApproveExternalInput{TicketID: ticket.ID, ApproverID: uuid.New()}); err != nil {
+		t.Fatalf("ApproveExternal: %v", err)
+	}
+
+	_, pending, err := reqs.GenerateCSR(context.Background(), GenerateCSRInput{
+		TicketID:           ticket.ID,
+		CommonName:         ticket.CommonName,
+		Organization:       "Acme Corp",
+		OrganizationalUnit: "Platform",
+		Country:            "id",
+		Province:           "Jakarta",
+		Locality:           "Jakarta Selatan",
+		Email:              "ops@example.com",
+		ExtKeyUsages:       []string{certutil.EKUCodeSigning},
+		KeyAlgorithm:       "rsa", KeyBits: 2048,
+		Notes: "handled by the platform team",
+	})
+	if err != nil {
+		t.Fatalf("GenerateCSR: %v", err)
+	}
+	if pending.OrganizationalUnit != "Platform" {
+		t.Errorf("OrganizationalUnit = %q, want %q", pending.OrganizationalUnit, "Platform")
+	}
+	if pending.Country != "ID" {
+		t.Errorf("Country = %q, want %q", pending.Country, "ID")
+	}
+	if pending.Province != "Jakarta" || pending.Locality != "Jakarta Selatan" {
+		t.Errorf("Province/Locality = %q/%q, want Jakarta/Jakarta Selatan", pending.Province, pending.Locality)
+	}
+	if pending.Email != "ops@example.com" {
+		t.Errorf("Email = %q, want %q", pending.Email, "ops@example.com")
+	}
+	if len(pending.ExtKeyUsage) != 1 || pending.ExtKeyUsage[0] != certutil.EKUCodeSigning {
+		t.Errorf("ExtKeyUsage = %v, want [%s]", pending.ExtKeyUsage, certutil.EKUCodeSigning)
+	}
+	if !strings.Contains(pending.Notes, "handled by the platform team") {
+		t.Errorf("Notes = %q, want it to include the caller-supplied note alongside the auto-generated one", pending.Notes)
+	}
+	if !strings.Contains(pending.Notes, ticket.ID.String()) {
+		t.Errorf("Notes = %q, want the auto-generated ticket cross-reference preserved", pending.Notes)
+	}
+}
+
 func TestGenerateCSRRejectsInternalTicket(t *testing.T) {
 	reqs, _ := newTestCertificateRequestService(t)
 	ticket, err := reqs.Submit(context.Background(), SubmitInput{

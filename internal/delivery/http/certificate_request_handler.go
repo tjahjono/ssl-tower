@@ -3,10 +3,12 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/certutil"
 	"github.com/ivangiovn/ssl-generator/internal/service"
 )
 
@@ -67,7 +69,16 @@ func (s *Server) handleRequestSubmit(w http.ResponseWriter, r *http.Request) {
 		Justification:  r.PostFormValue("justification"),
 		PONumber:       r.PostFormValue("po_number"),
 	}
-	if raw := r.PostFormValue("existing_certificate_id"); raw != "" {
+	// The form renders two separate certificate-to-renew selects — one
+	// listing internal certificates, one external — kept in sync with the
+	// trust_class radio purely via CSS (see requests.html). Read whichever
+	// one matches the trust class actually submitted; Submit itself
+	// re-validates the chosen certificate's real trust class server-side.
+	existingCertField := "existing_certificate_id_internal"
+	if in.TrustClass == domain.TrustExternal {
+		existingCertField = "existing_certificate_id_external"
+	}
+	if raw := r.PostFormValue(existingCertField); raw != "" {
 		if id, err := uuid.Parse(raw); err == nil {
 			in.ExistingCertificateID = &id
 		}
@@ -201,8 +212,9 @@ func (s *Server) handleTicketApproveInternal(w http.ResponseWriter, r *http.Requ
 	bits, _ := strconv.Atoi(r.PostFormValue("key_bits"))
 
 	ticket, cert, err := s.requests.ApproveInternal(r.Context(), service.ApproveInternalInput{
-		TicketID:   id,
-		ApproverID: s.currentUser(r).ID,
+		TicketID:         id,
+		ApproverID:       s.currentUser(r).ID,
+		ReuseExistingCSR: r.PostFormValue("csr_source") == "reuse",
 		CSR: service.CreateCSRInput{
 			CommonName:         r.PostFormValue("common_name"),
 			Organization:       r.PostFormValue("organization"),
@@ -217,6 +229,7 @@ func (s *Server) handleTicketApproveInternal(w http.ResponseWriter, r *http.Requ
 			KeyCurve:           r.PostFormValue("key_curve"),
 			Owner:              r.PostFormValue("owner"),
 			Notes:              "Fulfills certificate request ticket",
+			ExtKeyUsages:       r.PostForm["eku"],
 		},
 		RootCAID: rootCAID,
 		Days:     days,
@@ -297,13 +310,20 @@ func (s *Server) handleTicketGenerateCSR(w http.ResponseWriter, r *http.Request)
 	}
 	bits, _ := strconv.Atoi(r.PostFormValue("key_bits"))
 	_, cert, err := s.requests.GenerateCSR(r.Context(), service.GenerateCSRInput{
-		TicketID:     id,
-		CommonName:   r.PostFormValue("common_name"),
-		Organization: r.PostFormValue("organization"),
-		SANs:         r.PostFormValue("sans"),
-		KeyAlgorithm: r.PostFormValue("key_algorithm"),
-		KeyBits:      bits,
-		KeyCurve:     r.PostFormValue("key_curve"),
+		TicketID:           id,
+		CommonName:         r.PostFormValue("common_name"),
+		Organization:       r.PostFormValue("organization"),
+		OrganizationalUnit: r.PostFormValue("organizational_unit"),
+		Country:            r.PostFormValue("country"),
+		Province:           r.PostFormValue("province"),
+		Locality:           r.PostFormValue("locality"),
+		Email:              r.PostFormValue("email"),
+		SANs:               r.PostFormValue("sans"),
+		ExtKeyUsages:       r.PostForm["eku"],
+		KeyAlgorithm:       r.PostFormValue("key_algorithm"),
+		KeyBits:            bits,
+		KeyCurve:           r.PostFormValue("key_curve"),
+		Notes:              r.PostFormValue("notes"),
 	})
 	if err != nil {
 		msg, _ := errorMessage(err)
@@ -474,10 +494,20 @@ func (s *Server) decorateTicketView(r *http.Request, view map[string]any, id uui
 	}
 	view["Ticket"] = ticket
 	view["SLADays"] = s.requests.SLADays()
+	// Static and cheap enough to always compute — both the internal
+	// "Approve & sign" form and the external "Generate a CSR" form need it.
+	view["EKUOptions"] = certutil.ExtKeyUsageOptions()
 
 	if ticket.ExistingCertificateID != nil {
 		if existing, err := s.certs.Get(r.Context(), *ticket.ExistingCertificateID); err == nil {
 			view["ExistingCertificate"] = existing
+			// Gates the "reuse the same CSR" choice on the approval form —
+			// only meaningful when the certificate being renewed still has
+			// its own CSR and private key on file to clone (see
+			// CertificateService.CloneCSR); an uploaded-with-no-key or
+			// key-unavailable record falls back to "generate a new CSR"
+			// only, same as a brand-new ticket.
+			view["CanReuseCSR"] = existing.HasPrivateKey() && strings.TrimSpace(existing.CSRPEM) != ""
 		}
 	}
 	if ticket.ResultCertificateID != nil {

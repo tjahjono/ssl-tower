@@ -98,6 +98,62 @@ func TestBuildMultipartMIME(t *testing.T) {
 	}
 }
 
+// TestBuildMIMERejectsHeaderInjection covers a go/email-injection (CWE-640)
+// finding: From/To/Subject used to be spliced into raw header lines with no
+// CR/LF stripping, so a "\r\n" in an attacker-reachable value (an
+// admin-typed "send by email" recipient, or a certificate request's
+// requester-supplied common name feeding the subject) could inject an
+// extra header or smuggle content past the intended message. mail.ReadMessage
+// parsing back to exactly the expected three headers, with the injected
+// text neutralized rather than interpreted, confirms the fix.
+func TestBuildMIMERejectsHeaderInjection(t *testing.T) {
+	raw := buildMIME(
+		"alerts@example.com",
+		[]string{"victim@example.com\r\nBcc: attacker@evil.com"},
+		"Your certificate\r\nX-Injected: yes",
+		"body",
+	)
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("mail.ReadMessage: %v", err)
+	}
+	if got := msg.Header.Get("Bcc"); got != "" {
+		t.Fatalf("Bcc must not be injectable, got %q", got)
+	}
+	if got := msg.Header.Get("X-Injected"); got != "" {
+		t.Fatalf("X-Injected must not be injectable, got %q", got)
+	}
+	if got := msg.Header.Get("To"); got != "victim@example.comBcc: attacker@evil.com" {
+		t.Fatalf("To = %q, want the CRLF stripped but the rest of the value intact", got)
+	}
+	if got := msg.Header.Get("Subject"); got != "Your certificateX-Injected: yes" {
+		t.Fatalf("Subject = %q, want the CRLF stripped but the rest of the value intact", got)
+	}
+}
+
+func TestBuildMultipartMIMERejectsHeaderInjection(t *testing.T) {
+	raw, err := buildMultipartMIME(
+		"alerts@example.com\r\nBcc: attacker@evil.com",
+		[]string{"victim@example.com"},
+		"subject\r\n\r\nInjected body via header smuggling",
+		"body",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildMultipartMIME: %v", err)
+	}
+	msg, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("mail.ReadMessage: %v", err)
+	}
+	if got := msg.Header.Get("Bcc"); got != "" {
+		t.Fatalf("Bcc must not be injectable via From, got %q", got)
+	}
+	if strings.Contains(msg.Header.Get("Subject"), "\n") {
+		t.Fatalf("Subject must not carry a raw newline, got %q", msg.Header.Get("Subject"))
+	}
+}
+
 func TestEmailNotifierTransportReady(t *testing.T) {
 	cases := []struct {
 		name string

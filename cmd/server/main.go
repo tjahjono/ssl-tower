@@ -14,8 +14,6 @@ import (
 	"github.com/ivangiovn/ssl-generator/internal/domain"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/authcrypto"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/digicert"
-	"github.com/ivangiovn/ssl-generator/internal/pkg/ldapauth"
-
 	"github.com/ivangiovn/ssl-generator/internal/pkg/secret"
 	"github.com/ivangiovn/ssl-generator/internal/repository/postgres"
 	"github.com/ivangiovn/ssl-generator/internal/service"
@@ -62,17 +60,26 @@ func run() error {
 	settingsSvc := service.NewSettingsService(settingsRepo, log)
 	seed := service.SeedValues{
 		Settings: domain.AppSettings{
-			ExpiryWarningDays:  cfg.ExpiryWarningDays,
-			ExpiryCriticalDays: cfg.ExpiryCriticalDays,
-			ExpiryFinalDays:    cfg.ExpiryFinalDays,
-			SMTPHost:           cfg.SMTPHost,
-			SMTPPort:           cfg.SMTPPort,
-			SMTPUsername:       cfg.SMTPUsername,
-			SMTPPassword:       cfg.SMTPPassword,
-			AlertEmailFrom:     cfg.AlertFrom,
-			AlertEmailTo:       cfg.AlertTo,
-			TeamsWebhookURL:    cfg.TeamsWebhookURL,
-			TicketSLADays:      cfg.TicketSLADays,
+			ExpiryWarningDays:    cfg.ExpiryWarningDays,
+			ExpiryCriticalDays:   cfg.ExpiryCriticalDays,
+			ExpiryFinalDays:      cfg.ExpiryFinalDays,
+			SMTPHost:             cfg.SMTPHost,
+			SMTPPort:             cfg.SMTPPort,
+			SMTPUsername:         cfg.SMTPUsername,
+			SMTPPassword:         cfg.SMTPPassword,
+			AlertEmailFrom:       cfg.AlertFrom,
+			AlertEmailTo:         cfg.AlertTo,
+			TeamsWebhookURL:      cfg.TeamsWebhookURL,
+			TicketSLADays:        cfg.TicketSLADays,
+			LDAPURL:              cfg.LDAPURL,
+			LDAPBindDN:           cfg.LDAPBindDN,
+			LDAPBindPassword:     cfg.LDAPBindPassword,
+			LDAPBaseDN:           cfg.LDAPBaseDN,
+			LDAPUserFilter:       cfg.LDAPUserFilter,
+			LDAPGroupFilter:      cfg.LDAPGroupFilter,
+			LDAPRoleMapEditor:    cfg.LDAPRoleMapEditor,
+			LDAPRoleMapViewer:    cfg.LDAPRoleMapViewer,
+			LDAPRoleMapRequester: cfg.LDAPRoleMapRequester,
 		},
 		EncryptionKey: cfg.EncryptionKey,
 	}
@@ -137,34 +144,17 @@ func run() error {
 		sessionSecret = generated
 		log.Warn("SESSION_SECRET is not set — using an ephemeral secret for this run; a restart mid-MFA-login will require signing in again")
 	}
-	var ldapClient ldapauth.Client
-	if cfg.LDAPURL != "" {
-		ldapClient = ldapauth.NewLDAPClient(ldapauth.Config{
-			URL:          cfg.LDAPURL,
-			BindDN:       cfg.LDAPBindDN,
-			BindPassword: cfg.LDAPBindPassword,
-			BaseDN:       cfg.LDAPBaseDN,
-			UserFilter:   cfg.LDAPUserFilter,
-			GroupFilter:  cfg.LDAPGroupFilter,
-		})
-		log.Info("LDAP authentication enabled", "url", cfg.LDAPURL,
-			"editor_groups", len(cfg.LDAPRoleMapEditor), "viewer_groups", len(cfg.LDAPRoleMapViewer),
-			"requester_groups", len(cfg.LDAPRoleMapRequester))
-	} else {
-		log.Info("LDAP authentication is not configured — set LDAP_URL to enable it")
-	}
-
+	// LDAP configuration is read live from SettingsService on every login
+	// attempt (v1.8: portal-editable — see AuthOptions.Settings's doc
+	// comment in auth_service.go), not built once here — cfg.LDAPURL/etc.
+	// above are only ever used to seed app_settings on a database's first
+	// boot.
 	authSvc := service.NewAuthService(userRepo, log, service.AuthOptions{
 		SessionSecret:   sessionSecret,
 		IdleTimeout:     cfg.SessionIdleTimeout,
 		AbsoluteTimeout: cfg.SessionAbsoluteTimeout,
 		Issuer:          "SSL Tower",
-		LDAP:            ldapClient,
-		LDAPRoleMap: service.LDAPRoleMapping{
-			Editor:    cfg.LDAPRoleMapEditor,
-			Viewer:    cfg.LDAPRoleMapViewer,
-			Requester: cfg.LDAPRoleMapRequester,
-		},
+		Settings:        settingsSvc,
 	})
 	if err := authSvc.Bootstrap(ctx, cfg.AdminEmail, cfg.AdminInitialPassword); err != nil {
 		log.Warn("account bootstrap skipped", "error", err)

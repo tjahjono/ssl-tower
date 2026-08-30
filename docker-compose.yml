@@ -30,7 +30,7 @@ services:
       # .env file; `make env`/`make docker` populate .env with the same
       # values from .env.example, which take over once that file exists.
       APP_ENV: "${APP_ENV:-development}"
-      HTTP_ADDR: "${HTTP_ADDR:-:8080}"
+      HTTP_ADDR: "${HTTP_ADDR:-:3000}"
       DATABASE_URL: "${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/ssl_generator?sslmode=disable}"
       DB_MAX_CONNS: "${DB_MAX_CONNS:-10}"
       DB_CONNECT_TIMEOUT: "${DB_CONNECT_TIMEOUT:-10s}"
@@ -64,7 +64,7 @@ services:
       # ticket is flagged overdue on the ticket queue.
       TICKET_SLA_DAYS: "${TICKET_SLA_DAYS:-3}"
     ports:
-      - "8080:8080"
+      - "3000:3000"
 
 volumes:
   pgdata:

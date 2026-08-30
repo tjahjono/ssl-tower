@@ -1045,6 +1045,198 @@ one is a cross-cutting change, not a tweak — flag it to the user first.
   in the database that `result_certificate_id` and `pending_certificate_id`
   ended up equal — one certificate row, not two.
 
+- **v1.13: an internal renewal ticket can reuse the certificate being
+  renewed's exact CSR and private key instead of always minting a fresh
+  one, and the ticket-approval form gained the same full CSR configuration
+  the certificate vault's own "Generate" page has, plus seven new EKU
+  options** (`CertificateService.CloneCSR`, `ApproveInternalInput.
+  ReuseExistingCSR`, `POST /tickets/{id}/approve-internal`). Two requests
+  handled together since both touched the same form.
+  - **Reuse-the-same-CSR renewal path.** `ApproveInternal` previously always
+    called `CreateCSR` — even for a renewal ticket, it silently ignored
+    `ExistingCertificateID` and minted a brand-new key pair every time.
+    `CertificateService.CloneCSR` is the new alternative: it loads the
+    certificate named by the ticket's `ExistingCertificateID`, requires it
+    still has its own `CSRPEM` and `PrivateKeyPEM` on file (an issued
+    certificate keeps both — `applyIssuedCert` never clears them, confirmed
+    before building this), and copies them verbatim — ciphertext as-is, no
+    decrypt/re-encrypt — into a **brand-new** pending certificate record
+    along with the source's subject/SAN/EKU/key-algorithm fields. The
+    source record itself is never touched. This still follows this app's
+    standing "a renewal is always a new record, original kept as history"
+    convention (`BulkRenewInternal`, ticket-driven renewals) — the new part
+    is that the new record's public key is identical to the old one's, not
+    freshly generated. `ApproveInternal` branches on
+    `ReuseExistingCSR bool`: true requires `Type == RequestRenewal` and a
+    non-nil `ExistingCertificateID` (rejected otherwise, before touching
+    any certificate), and calls `CloneCSR` instead of `CreateCSR`; either
+    way, the resulting record is then signed with `SignWithRootCA` exactly
+    as before. The ticket-approval form only offers this choice
+    (`csr_source` radio, "Generate a new CSR" default vs. "Reuse the
+    existing certificate's CSR") when `CanReuseCSR` is true — the existing
+    certificate actually has a reusable CSR/key on file — falling back
+    silently to "generate a new CSR only" otherwise (an uploaded-with-no-key
+    record, say), the same as a brand-new ticket. **Security tradeoff,
+    confirmed explicitly rather than assumed**: reusing a private key
+    across a renewal runs against the usual best practice of rotating keys
+    on every renewal. The user was asked directly whether "reuse the same
+    CSR" should mean literally the same key (vs. same subject/SAN/EKU with
+    a fresh key, which would just be "new CSR" pre-filled) and chose the
+    literal-key-reuse reading — this is an admin-only, per-ticket, opt-in
+    choice, never the default, and the "generate a new CSR" option remains
+    one click away on the same form.
+  - **Full CSR configuration on ticket approval, for both new and renewal
+    tickets.** The "Approve & sign" form only ever exposed common name,
+    organization, SANs, key algorithm/bits, curve (P-256/P-384 only), and
+    owner — missing organizational unit, country, province, locality,
+    email, any EKU selection (hard-wired to the `server_auth`+`client_auth`
+    default via `x509ExtKeyUsages`'s fallback, since the handler never sent
+    `ExtKeyUsages` at all), notes, and the P-521 curve option, all of which
+    the vault's own "Generate a CSR" tab already had. The form now mirrors
+    that tab's full field set (same EKU chip-toggle markup, same
+    `data-key-rsa`/`data-key-ecdsa` algorithm toggle, same three curve
+    options) for both a `new`- and `renewal`-type ticket alike — there was
+    no reason for the two ticket types to see different capability here.
+    `decorateTicketView` now sets `view["EKUOptions"] =
+    certutil.ExtKeyUsageOptions()` whenever the Root-CA list is loaded (the
+    same condition gate `RootCAs` already used), and
+    `handleTicketApproveInternal` reads `r.PostForm["eku"]` into
+    `CSR.ExtKeyUsages`, exactly like `handleCertificateGenerate` already
+    does for the vault's own form.
+  - **Seven new Extended Key Usage options**, added to the single
+    `certutil` vocabulary (`internal/pkg/certutil/csr.go`) so every existing
+    call site — the vault's generate form, the ticket approval form, EKU
+    summaries/pills on read-only views — picked them up for free with no
+    per-call-site changes: `any` (Any Extended Key Usage, OID
+    `2.5.29.37.0`), `ipsec_end_system`/`ipsec_tunnel`/`ipsec_user` (OIDs
+    `1.3.6.1.5.5.7.3.5`/`.6`/`.7`), `smart_card_logon` (Microsoft OID
+    `1.3.6.1.4.1.311.20.2.2`), `document_signing` (Microsoft Document
+    Signing, OID `1.3.6.1.4.1.311.10.3.12` — confirmed with the user this
+    meant the Microsoft/Authenticode OID, not Adobe's PDF signing, which
+    doesn't define a distinct EKU OID at all), and `efs` (Encrypting File
+    System, Microsoft OID `1.3.6.1.4.1.311.10.3.4`). The first four map onto
+    `x509.ExtKeyUsage` constants the standard library already defines
+    (`ekuToX509`); the last three don't — Go's `x509.ExtKeyUsage` enum
+    simply has no constant for them — so they're carried through
+    `x509.Certificate`'s separate `UnknownExtKeyUsage []asn1.
+    ObjectIdentifier` field instead (new `ekuUnknownOIDs` map).
+    `x509ExtKeyUsages` was reshaped to return both `(known []x509.
+    ExtKeyUsage, unknown []asn1.ObjectIdentifier)` so `SelfSign`/`SignWithCA`
+    can set both `ExtKeyUsage` and `UnknownExtKeyUsage` on the certificate
+    template — the standard library merges both into one extended-key-usage
+    extension on issue, so from the outside a `smart_card_logon` cert looks
+    no different from a `code_signing` one. `DescribeExtKeyUsage` (reading
+    an issued/uploaded certificate back) was extended to also scan
+    `cert.UnknownExtKeyUsage` against `ekuUnknownOIDs`, so round-tripping any
+    of the three "unknown" keys through self-sign, CA-signing, or importing
+    a certificate that carries one of these OIDs from outside all correctly
+    report the right label. The CSR extension-request path
+    (`extKeyUsageExtension`, used to ask a CA to honour a requested EKU) was
+    already purely OID-based via `ekuOIDs` and needed no change beyond
+    adding entries for all seven new keys — it never depended on the
+    standard library's enum in the first place. Covered by new tests in
+    `certutil_test.go`: the four builtin-mapped keys round-trip through
+    `SelfSign`, the three unknown-OID keys round-trip through both
+    `SelfSign` and `SignWithCA` (confirming `UnknownExtKeyUsage` is actually
+    populated and `ExtKeyUsage` stays empty for them), and
+    `ExtKeyUsageOptions()` now lists all 13 keys.
+  - **Unrelated pre-existing build break fixed in passing**: `cmd/server/
+    main.go` still constructed `service.AuthOptions{LDAP: ldapClient,
+    LDAPRoleMap: ...}` — fields that no longer exist on `AuthOptions` since
+    v1.8 moved LDAP configuration to `SettingsService` (`Settings
+    *SettingsService`, read live via `Settings.Current()` on every login
+    attempt, per that section above). This left `go build ./...` broken at
+    HEAD before this work started, unrelated to either feature above — it
+    surfaced immediately when building to verify this change. Fixed by
+    passing `Settings: settingsSvc` (already constructed earlier in `run()`
+    for `SettingsService.Bootstrap`) and deleting the dead
+    `ldapClient`/`ldapauth.NewLDAPClient` construction, which nothing else
+    used once `AuthOptions` stopped taking a pre-built client. Also added
+    the nine `LDAP*` fields to `main.go`'s `SeedValues.Settings` block,
+    which was similarly missing them — without this, a fresh database would
+    never seed LDAP settings from `.env` at all, silently leaving LDAP off
+    until someone configured it by hand from `/settings`.
+  - **Verification status, stated plainly**: `go build ./...`, `go vet
+    ./...`, and `go test ./...` all pass, including new tests for
+    `CloneCSR`/`ReuseExistingCSR` (a renewal that reuses a CSR produces a
+    new certificate ID with an identical decrypted private key and CSR PEM
+    to the source, rejects a non-renewal ticket, and rejects a source
+    certificate with no stored key) and the new EKU options (see above), and
+    `NewRenderer()` parses every template including the reworked ticket
+    detail form with no error. **Live browser verification was not
+    completed** — Docker Desktop would not bring its daemon up in this
+    session (hung indefinitely past its normal few-second failure), and no
+    local Postgres/`.env` was available as a fallback the way earlier phases
+    used one. Unlike every phase before it, this section is **not**
+    end-to-end confirmed against a running server — before trusting this in
+    production, run through it by hand once Docker (or a local Postgres) is
+    available: submit and approve a renewal ticket both ways (new CSR and
+    reuse-existing-CSR, confirming the reused case's certificate shares its
+    predecessor's public key/CSR), and generate+sign a new-type ticket
+    through the expanded form with a non-default EKU selected (including at
+    least one of the three new unknown-OID keys) to confirm the issued
+    certificate actually carries it.
+
+## CodeQL
+
+A local CodeQL setup exists for cheap, targeted static analysis — running a
+scan and reading pinpointed findings costs far fewer tokens than grepping/
+reading broadly through the codebase for the same class of bug. The CLI
+(`codeql`, 2.26.2 via chocolatey) was already on this machine; the Go query
+pack is pinned to `codeql/go-queries@1.6.0` (the latest, 1.6.9, needs a newer
+CLI than what's installed here — its manifest format isn't backward
+compatible). `.codeql/` (the built database + SARIF output) is gitignored —
+rebuildable, not source.
+
+```bash
+codeql database create .codeql/go-db --language=go --source-root=. --overwrite
+codeql database analyze .codeql/go-db codeql/go-queries@1.6.0:codeql-suites/go-security-and-quality.qls --format=sarifv2.1.0 --output=.codeql/results.sarif
+```
+
+**Two real findings fixed** from the first scan (v1.13 follow-up): `safeNext`
+(`internal/delivery/http/auth_handler.go`) and the theme toggle's inline
+redirect check (`internal/delivery/http/theme_handler.go`) both only rejected
+a leading `//` — not `/\`, which some browsers normalize to `//` before ever
+making the request, so `/\evil.com` was a live open-redirect bypass on both
+the login `next` param and the theme cookie's `redirect` param. The theme
+handler's copy was deleted entirely in favor of calling the shared
+`safeNext`, so this exact class of bug (the same check duplicated and
+verified twice) can't happen again. Separately, `internal/pkg/notify/
+email.go`'s `buildMIME`/`buildMultipartMIME` spliced `From`/`To`/`Subject`
+into raw header lines via `fmt.Fprintf(..., "%s\r\n", ...)` with no CR/LF
+stripping — a `\r\n` in the ticket "send by email" recipient (admin-typed,
+never validated) or a certificate request's requester-supplied common name
+(feeding the subject) could inject an extra header (e.g. `Bcc:`) or smuggle
+content past the intended message (CWE-93/CWE-640). Fixed with a
+`sanitizeHeaderValue` helper applied to all three fields in both builders.
+Both fixes are covered by unit tests that round-trip a real payload through
+`net/mail.ReadMessage`/`safeNext` directly, rather than trusting a rescan.
+
+**Known false positives / tool limitations, not re-litigated on a future
+scan**: `go/cookie-secure-not-set` on both `Secure:` cookie fields in
+`auth_middleware.go` — the query only recognizes a literal `true`, but both
+are correctly parameterized by `COOKIE_SECURE`/`cookieSecure`, not
+hardcoded. `go/incorrect-integer-conversion` on `config.go`'s `int32(reqInt(
+"DB_MAX_CONNS"))` — a real gap (no overflow check) but boot-time config
+parsing from `.env`/the environment, not attacker-reachable input; low
+priority. More surprisingly, **both real fixes above are still flagged by
+a rescan** even after being fixed and unit-tested — not because the fix is
+incomplete, but because of two separate tool limitations worth knowing
+before trusting a bare "still flagged" reading in the future:
+`go/unvalidated-url-redirection`'s barrier detection doesn't recognize a
+hand-rolled validator function (`safeNext`) as clearing taint, and
+`go/email-injection`'s sink is the *final composed message* passed to
+`smtp.SendMail`/`w.Write`, not the header-construction step specifically —
+it can't distinguish "safe body content" from "unsafe header content," and
+flags any dynamic email content by design. Both call sites carry a
+`// codeql[query-id]` comment with the reasoning — note that this
+suppression-comment convention is only interpreted by GitHub's code-scanning
+*upload* step (`github/codeql-action`), not by the local `codeql database
+analyze` CLI used here, so it's inert for this local workflow today (it
+would take effect automatically if this repo is ever wired into GitHub Code
+Scanning) — the comments are left in purely as human-readable justification
+at the flagged line.
+
 ## Conventions
 
 - New DB schema changes go in `internal/database/migrations/NNNN_name.sql`,
