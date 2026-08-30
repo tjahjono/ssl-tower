@@ -379,6 +379,65 @@ func (s *CertificateService) CreateCSR(ctx context.Context, in CreateCSRInput) (
 	return record, nil
 }
 
+// CloneCSRInput names the certificate whose CSR and private key should be
+// reused verbatim for a brand-new pending record — no key generation at all.
+type CloneCSRInput struct {
+	SourceCertificateID uuid.UUID
+	Owner               string // falls back to the source's own Owner when blank
+	Notes               string
+}
+
+// CloneCSR creates a new pending certificate record carrying the exact same
+// CSR PEM and private key as an existing certificate — same public key,
+// same subject/SAN/EKU — rather than CreateCSR's usual fresh keygen. This is
+// the "reuse the same CSR" renewal path: the source's PrivateKeyPEM is
+// already ciphertext under the current sealer (or plaintext if encryption is
+// off), so it's copied across as-is with no decrypt/re-encrypt step, exactly
+// like every other field on the record. The source record itself is left
+// untouched — a renewal is always a new record, per this app's established
+// convention (see BulkRenewInternal), even when the key material is shared
+// between the two.
+func (s *CertificateService) CloneCSR(ctx context.Context, in CloneCSRInput) (*domain.Certificate, error) {
+	source, err := s.repo.GetByID(ctx, in.SourceCertificateID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(source.CSRPEM) == "" || !source.HasPrivateKey() {
+		return nil, domain.Invalid("source_certificate_id", "this certificate has no stored CSR and private key to reuse")
+	}
+	owner := strings.TrimSpace(in.Owner)
+	if owner == "" {
+		owner = source.Owner
+	}
+	record := &domain.Certificate{
+		CommonName:          source.CommonName,
+		Organization:        source.Organization,
+		OrganizationalUnit:  source.OrganizationalUnit,
+		Country:             source.Country,
+		Province:            source.Province,
+		Locality:            source.Locality,
+		Email:               source.Email,
+		DNSNames:            append([]string{}, source.DNSNames...),
+		IPAddresses:         append([]string{}, source.IPAddresses...),
+		Origin:              domain.OriginGenerated,
+		Owner:               owner,
+		KeyAlgorithm:        source.KeyAlgorithm,
+		KeyBits:             source.KeyBits,
+		KeyCurve:            source.KeyCurve,
+		CSRPEM:              source.CSRPEM,
+		PrivateKeyPEM:       source.PrivateKeyPEM,
+		PrivateKeyEncrypted: source.PrivateKeyEncrypted,
+		ExtKeyUsage:         append([]string{}, source.ExtKeyUsage...),
+		Status:              domain.CertPending,
+		Notes:               strings.TrimSpace(in.Notes),
+	}
+	if err := s.repo.Create(ctx, record); err != nil {
+		return nil, err
+	}
+	s.evaluate(ctx, record)
+	return record, nil
+}
+
 // ImportInput is the payload for uploading a certificate directly as PEM,
 // rather than generating a CSR in-app.
 type ImportInput struct {

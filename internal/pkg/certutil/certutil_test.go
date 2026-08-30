@@ -298,6 +298,111 @@ func TestNormalizeExtKeyUsagesRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestExtKeyUsageOptionsListsThirteenKeys(t *testing.T) {
+	opts := ExtKeyUsageOptions()
+	if len(opts) != 13 {
+		t.Fatalf("ExtKeyUsageOptions() returned %d options, want 13", len(opts))
+	}
+	for _, k := range []string{EKUAny, EKUIPSECEndSystem, EKUIPSECTunnel, EKUIPSECUser, EKUSmartCardLogon, EKUDocumentSigning, EKUEFS} {
+		if ExtKeyUsageLabel(k) == k {
+			t.Errorf("expected a real label for %q, got the raw key back", k)
+		}
+	}
+}
+
+// TestSelfSignHonoursBuiltinMappedNewExtKeyUsage covers the four additions
+// that map onto a real x509.ExtKeyUsage constant (EKUAny plus the three
+// IPSec purposes) — these round-trip through the ordinary ExtKeyUsage field.
+func TestSelfSignHonoursBuiltinMappedNewExtKeyUsage(t *testing.T) {
+	csrPEM, key, err := CreateCSR(newRequest())
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	csr, err := ParseCSRPEM(csrPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM: %v", err)
+	}
+	want := []string{EKUAny, EKUIPSECEndSystem, EKUIPSECTunnel, EKUIPSECUser}
+	cert, _, err := SelfSign(csr, key, 30, want)
+	if err != nil {
+		t.Fatalf("SelfSign: %v", err)
+	}
+	got := DescribeExtKeyUsage(cert)
+	if len(got) != len(want) {
+		t.Fatalf("EKU = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("EKU[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSelfSignHonoursUnknownOIDExtKeyUsage covers the three additions with
+// no built-in x509.ExtKeyUsage constant (Smart Card Logon, Microsoft
+// Document Signing, EFS) — these must round-trip through
+// x509.Certificate's UnknownExtKeyUsage field instead, and DescribeExtKeyUsage
+// must still recover them correctly on read-back.
+func TestSelfSignHonoursUnknownOIDExtKeyUsage(t *testing.T) {
+	csrPEM, key, err := CreateCSR(newRequest())
+	if err != nil {
+		t.Fatalf("CreateCSR: %v", err)
+	}
+	csr, err := ParseCSRPEM(csrPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM: %v", err)
+	}
+	want := []string{EKUSmartCardLogon, EKUDocumentSigning, EKUEFS}
+	cert, _, err := SelfSign(csr, key, 30, want)
+	if err != nil {
+		t.Fatalf("SelfSign: %v", err)
+	}
+	if len(cert.ExtKeyUsage) != 0 {
+		t.Errorf("expected no built-in ExtKeyUsage entries, got %v", cert.ExtKeyUsage)
+	}
+	if len(cert.UnknownExtKeyUsage) != len(want) {
+		t.Fatalf("expected %d UnknownExtKeyUsage OIDs, got %d", len(want), len(cert.UnknownExtKeyUsage))
+	}
+	got := DescribeExtKeyUsage(cert)
+	if len(got) != len(want) {
+		t.Fatalf("EKU = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("EKU[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSignWithCAHonoursUnknownOIDExtKeyUsage covers the same unknown-OID
+// path through SignWithCA (the one SignWithRootCA actually uses), mixed
+// with an ordinary built-in EKU to confirm both fields combine correctly.
+func TestSignWithCAHonoursUnknownOIDExtKeyUsage(t *testing.T) {
+	caCert, caKey := buildTestCA(t, 3650)
+	leafCSRPEM, _, err := CreateCSR(newRequest())
+	if err != nil {
+		t.Fatalf("CreateCSR (leaf): %v", err)
+	}
+	leafCSR, err := ParseCSRPEM(leafCSRPEM)
+	if err != nil {
+		t.Fatalf("ParseCSRPEM (leaf): %v", err)
+	}
+	want := []string{EKUServerAuth, EKUSmartCardLogon}
+	leaf, _, err := SignWithCA(leafCSR, caCert, caKey, 30, want)
+	if err != nil {
+		t.Fatalf("SignWithCA: %v", err)
+	}
+	got := DescribeExtKeyUsage(leaf)
+	if len(got) != len(want) {
+		t.Fatalf("EKU = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("EKU[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // buildTestCA builds a self-signed CA certificate + key for tests — SelfSign
 // already produces an IsCA:true certificate, so it doubles as a Root CA
 // fixture without needing separate CA-generation scaffolding.

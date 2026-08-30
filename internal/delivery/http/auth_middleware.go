@@ -163,20 +163,33 @@ func (s *Server) requireRequester(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// onboardingRedirectPath names the forced onboarding step a user still owes,
+// in order (password change before MFA enrollment) — "" once both are done.
+// Shared by enforceOnboarding (every subsequent request to a requireAuth
+// route) and the login handlers themselves (auth_handler.go), so a freshly
+// authenticated user lands on the right page immediately rather than only on
+// their next navigation to a protected route.
+func onboardingRedirectPath(user *domain.User) string {
+	switch {
+	case user.NeedsPasswordChange():
+		return "/account/password"
+	case user.NeedsMFAEnrollment():
+		return "/account/mfa/enroll"
+	default:
+		return ""
+	}
+}
+
 // enforceOnboarding sends a signed-in user straight to the forced step they
 // haven't completed yet, whatever page they actually asked for. Returns true
 // when it redirected (the caller must stop handling the request).
 func (s *Server) enforceOnboarding(w http.ResponseWriter, r *http.Request, user *domain.User) bool {
-	switch {
-	case user.NeedsPasswordChange() && r.URL.Path != "/account/password":
-		redirectOrHXRedirect(w, r, "/account/password")
-		return true
-	case user.NeedsMFAEnrollment() && r.URL.Path != "/account/mfa/enroll" && r.URL.Path != "/account/password":
-		redirectOrHXRedirect(w, r, "/account/mfa/enroll")
-		return true
-	default:
+	dest := onboardingRedirectPath(user)
+	if dest == "" || r.URL.Path == dest {
 		return false
 	}
+	redirectOrHXRedirect(w, r, dest)
+	return true
 }
 
 func redirectToLogin(w http.ResponseWriter, r *http.Request) {

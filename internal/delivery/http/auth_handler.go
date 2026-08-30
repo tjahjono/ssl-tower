@@ -14,8 +14,17 @@ const mfaPendingCookieName = "mfa_pending"
 // handleLoginPage renders the sign-in form. A signed-in visitor is bounced
 // straight to their destination instead of seeing it again.
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if s.currentUser(r) != nil {
-		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
+	if user := s.currentUser(r); user != nil {
+		dest := onboardingRedirectPath(user)
+		if dest == "" {
+			dest = safeNext(r.URL.Query().Get("next"))
+		}
+		// safeNext rejects anything but a same-site relative path (including
+		// the "//" and "/\" protocol-relative forms) — this query doesn't
+		// recognize a hand-rolled validator as a barrier, but safeNext is
+		// covered directly by TestSafeNext.
+		// codeql[go/unvalidated-url-redirection]
+		http.Redirect(w, r, dest, http.StatusSeeOther)
 		return
 	}
 	view := newView(r, "Sign in", "")
@@ -59,6 +68,14 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 
 	setSessionCookie(w, step.RawToken, s.cookieSecure, time.Now().Add(12*time.Hour))
 	s.audit.Record(r.Context(), &step.User.ID, step.User.Email, domain.AuditLoginSuccess, "user", step.User.ID.String(), "", clientIP(r))
+	// A first-time (or freshly reset) account is sent straight to whichever
+	// onboarding step it still owes — not to "next" — so it's never possible
+	// to land on the dashboard (the one route that skips requireAuth
+	// entirely) before password change/MFA enrollment is forced. Once fully
+	// onboarded, this is a no-op and next is honoured as before.
+	if dest := onboardingRedirectPath(step.User); dest != "" {
+		next = dest
+	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
@@ -106,6 +123,12 @@ func (s *Server) handleMFAChallengeSubmit(w http.ResponseWriter, r *http.Request
 	clearCookie(w, mfaPendingCookieName, s.cookieSecure)
 	setSessionCookie(w, step.RawToken, s.cookieSecure, time.Now().Add(12*time.Hour))
 	s.audit.Record(r.Context(), &step.User.ID, step.User.Email, domain.AuditLoginSuccess, "user", step.User.ID.String(), "mfa", clientIP(r))
+	// Reaching this point means MFA was already enabled, but the account
+	// could still owe a forced password change (e.g. an admin reset it) —
+	// same immediate redirect as handleLoginSubmit, for the same reason.
+	if dest := onboardingRedirectPath(step.User); dest != "" {
+		next = dest
+	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
@@ -223,10 +246,13 @@ func (s *Server) handleMFAEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 // --- helpers ---------------------------------------------------------------
 
 // safeNext keeps an open-redirect out of the login flow: only a path
-// beginning with a single "/" (never "//", which browsers treat as
-// protocol-relative to another host) is accepted.
+// beginning with a single "/" is accepted — never "//" or "/\", both of
+// which some browsers treat as protocol-relative to another host (a bare
+// "//" check alone isn't enough: a backslash in the second position is
+// normalized to a forward slash by some browsers' URL parsers before the
+// request is ever made).
 func safeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+	if len(next) < 2 || next[0] != '/' || next[1] == '/' || next[1] == '\\' {
 		return "/"
 	}
 	return next

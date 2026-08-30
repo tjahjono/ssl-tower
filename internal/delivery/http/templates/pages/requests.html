@@ -48,11 +48,32 @@
       </div>
 
       <div data-show-when="type:renewal" class="hidden">
-        <label for="existing_certificate_id" class="field-label mb-1 block">Certificate to renew</label>
-        <select id="existing_certificate_id" name="existing_certificate_id" class="field-select w-full py-2 pl-3 pr-9 text-sm">
-          <option value="">— choose a certificate —</option>
-          {{range .RenewableCertificates}}<option value="{{.ID}}">{{.CommonName}} ({{.ExpiresIn}})</option>{{end}}
-        </select>
+        {{/* Two separate selects, nested under their own trust_class
+             data-show-when, rather than one filtered client-side: a hidden
+             ancestor already hides its whole subtree, so nesting composes
+             the "type:renewal AND trust_class:X" condition for free without
+             any change to the generic data-show-when mechanism (which only
+             ever matches one field:value pair and doesn't reach inside a
+             <select> to hide individual <option>s anyway). Distinct name
+             attributes avoid the two fields colliding on submission —
+             handleRequestSubmit reads whichever one matches the submitted
+             trust_class, and Submit itself re-validates that the chosen
+             certificate's actual trust class agrees, since a client can't be
+             trusted to only ever submit a consistent combination. */}}
+        <div data-show-when="trust_class:internal" class="hidden">
+          <label for="existing_certificate_id_internal" class="field-label mb-1 block">Certificate to renew</label>
+          <select id="existing_certificate_id_internal" name="existing_certificate_id_internal" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+            <option value="">— choose a certificate —</option>
+            {{range .RenewableCertificates}}{{if eq .TrustClass "internal"}}<option value="{{.ID}}">{{.CommonName}} ({{.ExpiresIn}})</option>{{end}}{{end}}
+          </select>
+        </div>
+        <div data-show-when="trust_class:external" class="hidden">
+          <label for="existing_certificate_id_external" class="field-label mb-1 block">Certificate to renew</label>
+          <select id="existing_certificate_id_external" name="existing_certificate_id_external" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+            <option value="">— choose a certificate —</option>
+            {{range .RenewableCertificates}}{{if eq .TrustClass "external"}}<option value="{{.ID}}">{{.CommonName}} ({{.ExpiresIn}})</option>{{end}}{{end}}
+          </select>
+        </div>
       </div>
 
       <div class="grid gap-4 sm:grid-cols-2">

@@ -71,69 +71,137 @@
             </p>
             {{if .RootCAs}}
             <form hx-post="/tickets/{{$t.ID}}/approve-internal" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-4">
-              <div class="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label for="ticket-common-name" class="field-label mb-1 block">Common name *</label>
-                  <input id="ticket-common-name" name="common_name" required value="{{$t.CommonName}}" class="field-input w-full px-3 py-2 text-sm">
+              {{if .CanReuseCSR}}
+              <div class="rounded-lg border border-line/10 bg-surface/40 p-3">
+                <span class="field-label mb-2 block">Signing request</span>
+                <div class="flex flex-wrap gap-4 text-sm text-ink-3">
+                  <label class="flex items-center gap-2">
+                    <input type="radio" name="csr_source" value="new" checked class="text-sky-500 focus:ring-sky-500">
+                    Generate a new CSR
+                  </label>
+                  <label class="flex items-center gap-2">
+                    <input type="radio" name="csr_source" value="reuse" class="text-sky-500 focus:ring-sky-500">
+                    Reuse the existing certificate's CSR (same key)
+                  </label>
+                </div>
+                <p class="mt-2 text-xs text-ink-6">
+                  Reusing the CSR signs the exact same key pair, subject, SANs, and EKU as the
+                  certificate being renewed, under a fresh serial and validity — no new key
+                  material is generated.
+                </p>
+              </div>
+
+              <div data-show-when="csr_source:reuse" class="hidden rounded-lg border border-line/10 bg-surface/40 p-3 text-xs text-ink-4">
+                Reusing <span class="font-medium text-ink-2">{{.ExistingCertificate.CommonName}}</span>'s CSR
+                (<span class="font-mono">{{.ExistingCertificate.KeyLabel}}</span>{{if .ExistingCertificate.ExtKeyUsage}}, EKU: {{ekuSummary .ExistingCertificate.ExtKeyUsage}}{{end}}).
+                Pick a Root CA and validity below to sign it.
+              </div>
+              {{end}}
+
+              <div {{if .CanReuseCSR}}data-show-when="csr_source:new"{{end}} class="space-y-4">
+                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  <div class="sm:col-span-2 lg:col-span-1">
+                    <label for="ticket-common-name" class="field-label mb-1 block">Common name *</label>
+                    <input id="ticket-common-name" name="common_name" required value="{{$t.CommonName}}" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-organization" class="field-label mb-1 block">Organization</label>
+                    <input id="ticket-organization" name="organization" value="{{$t.Organization}}" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-organizational-unit" class="field-label mb-1 block">Org. unit</label>
+                    <input id="ticket-organizational-unit" name="organizational_unit" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-country" class="field-label mb-1 block">Country (2 letters)</label>
+                    <input id="ticket-country" name="country" maxlength="2" class="field-input w-full px-3 py-2 text-sm uppercase">
+                  </div>
+                  <div>
+                    <label for="ticket-province" class="field-label mb-1 block">State / province</label>
+                    <input id="ticket-province" name="province" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-locality" class="field-label mb-1 block">Locality</label>
+                    <input id="ticket-locality" name="locality" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-email" class="field-label mb-1 block">Email</label>
+                    <input id="ticket-email" name="email" type="email" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
+                  <div>
+                    <label for="ticket-owner" class="field-label mb-1 block">Owner / team</label>
+                    <input id="ticket-owner" name="owner" value="{{$t.Owner}}" class="field-input w-full px-3 py-2 text-sm">
+                  </div>
                 </div>
                 <div>
-                  <label for="ticket-organization" class="field-label mb-1 block">Organization</label>
-                  <input id="ticket-organization" name="organization" value="{{$t.Organization}}" class="field-input w-full px-3 py-2 text-sm">
+                  <label for="ticket-sans" class="field-label mb-1 block">Subject alternative names</label>
+                  {{/* Default to the common name when the requester didn't list any additional
+                       names — same "default SAN to CN" convenience the certificate-generation page
+                       gives an editor, just applied server-side here since the common name already
+                       arrives pre-filled from the ticket rather than freshly typed. data-auto-filled
+                       marks it the same way app.js's own CN-to-SANs mirror would, so if the approver
+                       edits the common name before submitting, this still keeps mirroring it — real
+                       DNSNames from the requester are never touched, exactly as before. */}}
+                  <textarea id="ticket-sans" name="sans" rows="3" spellcheck="false"
+                            {{if not $t.DNSNames}}data-auto-filled="1"{{end}}
+                            class="field-input w-full px-3 py-2 font-mono text-xs">{{if $t.DNSNames}}{{join "\n" $t.DNSNames}}{{else}}{{$t.CommonName}}{{end}}</textarea>
+                </div>
+                <div>
+                  <span class="field-label mb-1 block">Extended key usage</span>
+                  <div class="flex flex-wrap gap-2">
+                    {{range .EKUOptions}}
+                    <label>
+                      <input type="checkbox" name="eku" value="{{.Key}}"
+                             {{if or (eq .Key "server_auth") (eq .Key "client_auth")}}checked{{end}}
+                             class="peer chip-toggle-input">
+                      <span class="chip-toggle-label">{{.Label}}</span>
+                    </label>
+                    {{end}}
+                  </div>
+                </div>
+                <div class="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <label for="ticket-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
+                    <select id="ticket-key-algorithm" name="key_algorithm" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="rsa">RSA</option>
+                      <option value="ecdsa">ECDSA</option>
+                    </select>
+                  </div>
+                  <div data-key-rsa>
+                    <label for="ticket-key-bits" class="field-label mb-1 block">Key size (RSA)</label>
+                    <select id="ticket-key-bits" name="key_bits" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="2048">2048 bit</option>
+                      <option value="3072">3072 bit</option>
+                      <option value="4096">4096 bit</option>
+                    </select>
+                  </div>
+                  <div data-key-ecdsa class="hidden">
+                    <label for="ticket-key-curve" class="field-label mb-1 block">Curve (ECDSA)</label>
+                    <select id="ticket-key-curve" name="key_curve" class="field-select w-full py-2 pl-3 pr-9 text-sm">
+                      <option value="P-256">P-256</option>
+                      <option value="P-384">P-384</option>
+                      <option value="P-521">P-521</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label for="ticket-notes" class="field-label mb-1 block">Notes</label>
+                  <input id="ticket-notes" name="notes" class="field-input w-full px-3 py-2 text-sm">
                 </div>
               </div>
-              <div>
-                <label for="ticket-sans" class="field-label mb-1 block">Subject alternative names</label>
-                {{/* Default to the common name when the requester didn't list any additional
-                     names — same "default SAN to CN" convenience the certificate-generation page
-                     gives an editor, just applied server-side here since the common name already
-                     arrives pre-filled from the ticket rather than freshly typed. data-auto-filled
-                     marks it the same way app.js's own CN-to-SANs mirror would, so if the approver
-                     edits the common name before submitting, this still keeps mirroring it — real
-                     DNSNames from the requester are never touched, exactly as before. */}}
-                <textarea id="ticket-sans" name="sans" rows="3" spellcheck="false"
-                          {{if not $t.DNSNames}}data-auto-filled="1"{{end}}
-                          class="field-input w-full px-3 py-2 font-mono text-xs">{{if $t.DNSNames}}{{join "\n" $t.DNSNames}}{{else}}{{$t.CommonName}}{{end}}</textarea>
-              </div>
-              <div class="grid gap-4 sm:grid-cols-3">
-                <div>
-                  <label for="ticket-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
-                  <select id="ticket-key-algorithm" name="key_algorithm" class="field-select w-full py-2 pl-3 pr-9 text-sm">
-                    <option value="rsa">RSA</option>
-                    <option value="ecdsa">ECDSA</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="ticket-key-bits" class="field-label mb-1 block">Key size (RSA)</label>
-                  <select id="ticket-key-bits" name="key_bits" class="field-select w-full py-2 pl-3 pr-9 text-sm">
-                    <option value="2048">2048 bit</option>
-                    <option value="3072">3072 bit</option>
-                    <option value="4096">4096 bit</option>
-                  </select>
-                </div>
-                <div>
-                  <label for="ticket-key-curve" class="field-label mb-1 block">Curve (ECDSA)</label>
-                  <select id="ticket-key-curve" name="key_curve" class="field-select w-full py-2 pl-3 pr-9 text-sm">
-                    <option value="P-256">P-256</option>
-                    <option value="P-384">P-384</option>
-                  </select>
-                </div>
-              </div>
-              <div class="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label for="ticket-owner" class="field-label mb-1 block">Owner / team</label>
-                  <input id="ticket-owner" name="owner" value="{{$t.Owner}}" class="field-input w-full px-3 py-2 text-sm">
-                </div>
+
+              <div class="grid gap-4 sm:grid-cols-2 border-t border-line/5 pt-4">
                 <div>
                   <label for="ticket-root-ca" class="field-label mb-1 block">Root CA *</label>
                   <select id="ticket-root-ca" name="root_ca_id" required class="field-select w-full py-2 pl-3 pr-9 text-sm">
                     {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
                   </select>
                 </div>
-              </div>
-              <div class="flex flex-wrap items-center gap-2">
-                <label for="ticket-days" class="text-xs text-ink-5">Valid for</label>
-                <input id="ticket-days" name="days" type="number" min="1" max="3650" value="365" class="field-input w-24 px-3 py-1.5 text-sm">
-                <span class="text-xs text-ink-5">days</span>
+                <div class="flex flex-wrap items-center gap-2">
+                  <label for="ticket-days" class="text-xs text-ink-5">Valid for</label>
+                  <input id="ticket-days" name="days" type="number" min="1" max="3650" value="365" class="field-input w-24 px-3 py-1.5 text-sm">
+                  <span class="text-xs text-ink-5">days</span>
+                </div>
               </div>
               <button type="submit" class="btn-primary px-4 py-2 text-sm">Approve &amp; sign</button>
             </form>
@@ -191,14 +259,34 @@
             elsewhere.
           </p>
           <form hx-post="/tickets/{{$t.ID}}/generate-csr" hx-target="#ticket-detail" hx-swap="outerHTML" class="space-y-4">
-            <div class="grid gap-4 sm:grid-cols-2">
-              <div>
+            <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div class="sm:col-span-2 lg:col-span-1">
                 <label for="csr-common-name" class="field-label mb-1 block">Common name *</label>
                 <input id="csr-common-name" name="common_name" required value="{{$t.CommonName}}" class="field-input w-full px-3 py-2 text-sm">
               </div>
               <div>
                 <label for="csr-organization" class="field-label mb-1 block">Organization</label>
                 <input id="csr-organization" name="organization" value="{{$t.Organization}}" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label for="csr-organizational-unit" class="field-label mb-1 block">Org. unit</label>
+                <input id="csr-organizational-unit" name="organizational_unit" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label for="csr-country" class="field-label mb-1 block">Country (2 letters)</label>
+                <input id="csr-country" name="country" maxlength="2" class="field-input w-full px-3 py-2 text-sm uppercase">
+              </div>
+              <div>
+                <label for="csr-province" class="field-label mb-1 block">State / province</label>
+                <input id="csr-province" name="province" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label for="csr-locality" class="field-label mb-1 block">Locality</label>
+                <input id="csr-locality" name="locality" class="field-input w-full px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label for="csr-email" class="field-label mb-1 block">Email</label>
+                <input id="csr-email" name="email" type="email" class="field-input w-full px-3 py-2 text-sm">
               </div>
             </div>
             <div>
@@ -209,7 +297,20 @@
                         {{if not $t.DNSNames}}data-auto-filled="1"{{end}}
                         class="field-input w-full px-3 py-2 font-mono text-xs">{{if $t.DNSNames}}{{join "\n" $t.DNSNames}}{{else}}{{$t.CommonName}}{{end}}</textarea>
             </div>
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <span class="field-label mb-1 block">Extended key usage</span>
+              <div class="flex flex-wrap gap-2">
+                {{range .EKUOptions}}
+                <label>
+                  <input type="checkbox" name="eku" value="{{.Key}}"
+                         {{if or (eq .Key "server_auth") (eq .Key "client_auth")}}checked{{end}}
+                         class="peer chip-toggle-input">
+                  <span class="chip-toggle-label">{{.Label}}</span>
+                </label>
+                {{end}}
+              </div>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
               <div>
                 <label for="csr-key-algorithm" class="field-label mb-1 block">Key algorithm</label>
                 <select id="csr-key-algorithm" name="key_algorithm" class="field-select w-full py-2 pl-3 pr-9 text-sm">
@@ -233,6 +334,10 @@
                   <option value="P-521">P-521</option>
                 </select>
               </div>
+            </div>
+            <div>
+              <label for="csr-notes" class="field-label mb-1 block">Notes</label>
+              <input id="csr-notes" name="notes" class="field-input w-full px-3 py-2 text-sm">
             </div>
             <button type="submit" class="btn-primary px-4 py-2 text-sm">Generate CSR</button>
           </form>

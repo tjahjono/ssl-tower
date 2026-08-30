@@ -104,6 +104,14 @@ func (s *CertificateRequestService) Submit(ctx context.Context, in SubmitInput) 
 		if err != nil {
 			return nil, domain.Invalid("existing_certificate_id", "the certificate you picked to renew could not be found")
 		}
+		// The requests page renders separate internal/external certificate
+		// pickers kept in sync with the trust_class radio purely via CSS
+		// (data-show-when) — a client can't be trusted to only ever submit a
+		// consistent combination of the two, so the actual trust class of
+		// the chosen certificate is re-checked here.
+		if existing.TrustClass() != r.TrustClass {
+			return nil, domain.Invalid("existing_certificate_id", "that certificate's trust class doesn't match the trust class chosen above")
+		}
 		if r.CommonName == "" {
 			r.CommonName = existing.CommonName
 		}
@@ -158,12 +166,20 @@ func (s *CertificateRequestService) loadPending(ctx context.Context, id uuid.UUI
 // same form the certificate vault's own "Generate" page uses, pre-filled
 // from the ticket) and picks a Root CA, and a single submission both mints
 // the certificate and fulfills the ticket.
+//
+// ReuseExistingCSR is renewal-only: instead of CSR minting a fresh key pair
+// via CreateCSR, the certificate named by the ticket's ExistingCertificateID
+// has its CSR and private key cloned verbatim into the new record (see
+// CertificateService.CloneCSR) — same public key, same subject/SAN/EKU,
+// just re-signed with a new serial/validity. CSR is ignored when this is
+// true.
 type ApproveInternalInput struct {
-	TicketID   uuid.UUID
-	ApproverID uuid.UUID
-	CSR        CreateCSRInput
-	RootCAID   uuid.UUID
-	Days       int
+	TicketID         uuid.UUID
+	ApproverID       uuid.UUID
+	ReuseExistingCSR bool
+	CSR              CreateCSRInput
+	RootCAID         uuid.UUID
+	Days             int
 }
 
 // ApproveInternal signs an internal ticket's certificate against a Root CA
@@ -177,7 +193,19 @@ func (s *CertificateRequestService) ApproveInternal(ctx context.Context, in Appr
 		return nil, nil, domain.Invalid("trust_class", "this ticket is external — approve it from the external flow instead")
 	}
 
-	cert, err := s.certs.CreateCSR(ctx, in.CSR)
+	var cert *domain.Certificate
+	if in.ReuseExistingCSR {
+		if r.Type != domain.RequestRenewal || r.ExistingCertificateID == nil {
+			return nil, nil, domain.Invalid("reuse_existing_csr", "only a renewal ticket naming an existing certificate can reuse its CSR")
+		}
+		cert, err = s.certs.CloneCSR(ctx, CloneCSRInput{
+			SourceCertificateID: *r.ExistingCertificateID,
+			Owner:               in.CSR.Owner,
+			Notes:               fmt.Sprintf("Renewal of certificate %s via ticket %s (same CSR/key reused)", *r.ExistingCertificateID, r.ID),
+		})
+	} else {
+		cert, err = s.certs.CreateCSR(ctx, in.CSR)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -244,13 +272,20 @@ func (s *CertificateRequestService) ApproveExternal(ctx context.Context, in Appr
 // without calling any outside API: it only mints a key pair and CSR for the
 // admin to submit to whichever CA the ticket's PO number is with, by hand.
 type GenerateCSRInput struct {
-	TicketID     uuid.UUID
-	CommonName   string
-	Organization string
-	SANs         string
-	KeyAlgorithm string
-	KeyBits      int
-	KeyCurve     string
+	TicketID           uuid.UUID
+	CommonName         string
+	Organization       string
+	OrganizationalUnit string
+	Country            string
+	Province           string
+	Locality           string
+	Email              string
+	SANs               string
+	ExtKeyUsages       []string
+	KeyAlgorithm       string
+	KeyBits            int
+	KeyCurve           string
+	Notes              string // appended to the auto-generated ticket cross-reference note
 }
 
 // GenerateCSR mints a key pair and CSR for an in-progress external ticket
@@ -282,15 +317,25 @@ func (s *CertificateRequestService) GenerateCSR(ctx context.Context, in Generate
 		return nil, nil, domain.Invalid("status", "a CSR has already been generated for this ticket")
 	}
 
+	note := fmt.Sprintf("Generated for certificate request ticket %s (PO %s).", r.ID, r.PONumber)
+	if extra := strings.TrimSpace(in.Notes); extra != "" {
+		note = note + " " + extra
+	}
 	pending, err := s.certs.CreateCSR(ctx, CreateCSRInput{
-		CommonName:   in.CommonName,
-		Organization: in.Organization,
-		SANs:         in.SANs,
-		KeyAlgorithm: in.KeyAlgorithm,
-		KeyBits:      in.KeyBits,
-		KeyCurve:     in.KeyCurve,
-		Owner:        r.Owner,
-		Notes:        fmt.Sprintf("Generated for certificate request ticket %s (PO %s).", r.ID, r.PONumber),
+		CommonName:         in.CommonName,
+		Organization:       in.Organization,
+		OrganizationalUnit: in.OrganizationalUnit,
+		Country:            in.Country,
+		Province:           in.Province,
+		Locality:           in.Locality,
+		Email:              in.Email,
+		SANs:               in.SANs,
+		ExtKeyUsages:       in.ExtKeyUsages,
+		KeyAlgorithm:       in.KeyAlgorithm,
+		KeyBits:            in.KeyBits,
+		KeyCurve:           in.KeyCurve,
+		Owner:              r.Owner,
+		Notes:              note,
 	})
 	if err != nil {
 		return nil, nil, err

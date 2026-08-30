@@ -41,13 +41,8 @@ func (s *Server) handleThemeToggle(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	redirectTo := r.PostFormValue("redirect")
-	// Only ever redirect back to a same-site, relative path — never trust
-	// this into an open redirect. "//host/path" is protocol-relative and
-	// browsers will follow it off-site, so it's rejected same as any
-	// absolute URL.
-	if len(redirectTo) < 2 || redirectTo[0] != '/' || redirectTo[1] == '/' {
-		redirectTo = "/"
-	}
-	http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+	// safeNext (auth_handler.go) is the same "same-site relative path only"
+	// open-redirect guard the login flow uses — shared rather than
+	// duplicated here, so a fix to the check only ever has to happen once.
+	http.Redirect(w, r, safeNext(r.PostFormValue("redirect")), http.StatusSeeOther)
 }
