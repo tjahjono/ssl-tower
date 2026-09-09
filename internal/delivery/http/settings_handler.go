@@ -40,12 +40,12 @@ func (s *Server) settingsView(r *http.Request) map[string]any {
 	return view
 }
 
-// handleSettingsSubmit saves the general settings form. SMTPPassword and
-// TeamsWebhookURL are write-only fields in the UI (never pre-filled with
-// the real stored value) — a blank submission keeps whatever is already
-// stored, and the "clear" checkbox is the only way to explicitly wipe one,
-// so an admin can't accidentally erase a working secret just by loading and
-// re-saving the page.
+// handleSettingsSubmit saves the general settings form. SMTPPassword,
+// TeamsWebhookURL, LDAPBindPassword, and ADCSPassword are all write-only
+// fields in the UI (never pre-filled with the real stored value) — a blank
+// submission keeps whatever is already stored, and the "clear" checkbox is
+// the only way to explicitly wipe one, so an admin can't accidentally erase
+// a working secret just by loading and re-saving the page.
 func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -111,6 +111,14 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 		ldapBindPassword = v
 	}
 
+	// adcs_password is write-only, same pattern as above.
+	adcsPassword := current.ADCSPassword
+	if r.PostFormValue("adcs_password_clear") == "on" {
+		adcsPassword = ""
+	} else if v := r.PostFormValue("adcs_password"); v != "" {
+		adcsPassword = v
+	}
+
 	patch := domain.AppSettings{
 		ExpiryWarningDays:  warningDays,
 		ExpiryCriticalDays: criticalDays,
@@ -134,6 +142,11 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 		LDAPRoleMapEditor:    splitLines(r.PostFormValue("ldap_role_map_editor")),
 		LDAPRoleMapViewer:    splitLines(r.PostFormValue("ldap_role_map_viewer")),
 		LDAPRoleMapRequester: splitLines(r.PostFormValue("ldap_role_map_requester")),
+
+		ADCSEndpoint: strings.TrimSpace(r.PostFormValue("adcs_endpoint")),
+		ADCSUsername: strings.TrimSpace(r.PostFormValue("adcs_username")),
+		ADCSPassword: adcsPassword,
+		ADCSTemplate: strings.TrimSpace(r.PostFormValue("adcs_template")),
 	}
 
 	user := s.currentUser(r)

@@ -145,6 +145,35 @@ type Config struct {
 	// ships the current documented value to copy as-is.
 	DigiCertBaseURL string
 
+	// ADCS settings (v1.16: portal-editable from /settings, the same v1.8
+	// move LDAP already got — these fields are now only a first-boot SEED,
+	// exactly like LDAPURL below; see SettingsService's doc comment).
+	// ADCSEndpoint is the "empty = off" toggle: empty means the pending-
+	// certificate detail page's "Sign with" dropdown simply doesn't offer
+	// "Submit to ADCS". Once set (here, as a seed, or later from the
+	// portal), ADCSUsername/ADCSPassword/ADCSTemplate become required —
+	// enforced by SettingsService.Update on a live edit, not here on a
+	// boot-time seed, same reasoning as LDAP's cross-field check below. This
+	// is the full URL of ADCS's Certificate Enrollment Web Service (CES)
+	// endpoint configured for username/password authentication — e.g.
+	// "https://adcs.corp.example.com/ADPolicyProvider_CEP_UsernamePassword/service.svc/CES" —
+	// not a bare hostname; ADCS's own admin console (or the
+	// certutil -config command) is where that URL comes from. See
+	// internal/pkg/adcs and CLAUDE.md's ADCS section for what is and isn't
+	// verified against a real server.
+	ADCSEndpoint string
+	// ADCSUsername/ADCSPassword authenticate to the CES endpoint above via
+	// a WS-Security UsernameToken — the account needs Enroll permission on
+	// whichever certificate template ADCSTemplate names.
+	ADCSUsername string
+	ADCSPassword string
+	// ADCSTemplate is the certificate template name (its short "common"
+	// name, e.g. "WebServer", not its display name) ADCS should issue
+	// against — sent as a WS-Trust AdditionalContext item, since a
+	// from-scratch PKCS#10 request built by this app carries no Microsoft
+	// template extension of its own.
+	ADCSTemplate string
+
 	// LDAP settings (v1.8: portal-editable from /settings — these fields are
 	// now only a first-boot SEED, exactly like ExpiryWarningDays and the
 	// other settings SettingsService.Bootstrap seeds; see that type's doc
@@ -288,6 +317,11 @@ func Load() (*Config, error) {
 		DigiCertAPIKey:  optionalString("DIGICERT_API_KEY"),
 		DigiCertBaseURL: optionalString("DIGICERT_BASE_URL"),
 
+		ADCSEndpoint: optionalString("ADCS_ENDPOINT"),
+		ADCSUsername: optionalString("ADCS_USERNAME"),
+		ADCSPassword: optionalString("ADCS_PASSWORD"),
+		ADCSTemplate: optionalString("ADCS_TEMPLATE"),
+
 		LDAPURL:          optionalString("LDAP_URL"),
 		LDAPBindDN:       optionalString("LDAP_BIND_DN"),
 		LDAPBindPassword: optionalString("LDAP_BIND_PASSWORD"),
@@ -307,6 +341,11 @@ func Load() (*Config, error) {
 	if cfg.DigiCertAPIKey != "" && cfg.DigiCertBaseURL == "" {
 		return nil, fmt.Errorf("config: DIGICERT_BASE_URL is required when DIGICERT_API_KEY is set")
 	}
+
+	// ADCS_ENDPOINT's own cross-field check (the other ADCS_* fields
+	// required once it's set) moved to service.SettingsService.Update — see
+	// the ADCSEndpoint field's doc comment above; same v1.16 move applied
+	// to LDAP_URL's own cross-field check below in v1.8.
 
 	// LDAP_URL's own cross-field check (the other LDAP_* fields required
 	// once it's set, filter placeholder counts, at least one role mapping)
@@ -351,6 +390,7 @@ var secretFileKeys = []string{
 	"SMTP_PASSWORD",
 	"TEAMS_WEBHOOK_URL",
 	"LDAP_BIND_PASSWORD",
+	"ADCS_PASSWORD",
 }
 
 // applySecretFiles implements the standard Docker/Kubernetes secrets-as-files

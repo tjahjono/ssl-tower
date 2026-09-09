@@ -138,9 +138,6 @@ func (s *Server) handleCertificatesPage(w http.ResponseWriter, r *http.Request) 
 	view["CriticalPercent"] = criticalPct
 	view["CanDownload"] = s.currentUser(r).Role.CanManageUsers()
 	view["EKUOptions"] = certutil.ExtKeyUsageOptions()
-	if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
-		view["RootCAs"] = rootCAs
-	}
 	s.render.Page(w, http.StatusOK, "certificates", view)
 }
 
@@ -161,9 +158,6 @@ func (s *Server) handleCertificateList(w http.ResponseWriter, r *http.Request) {
 	view["CriticalDays"] = critical
 	view["WarningPercent"] = warningPct
 	view["CriticalPercent"] = criticalPct
-	if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
-		view["RootCAs"] = rootCAs
-	}
 	s.render.Partial(w, http.StatusOK, "certificate-table", view)
 }
 
@@ -626,6 +620,19 @@ func (s *Server) handleCertificateIssue(w http.ResponseWriter, r *http.Request) 
 			Message: fmt.Sprintf("%q generated and used to sign this certificate for %d days.", ca.Name, days),
 		})
 
+	case "adcs":
+		record, err := s.certs.SignWithADCS(r.Context(), id)
+		if err != nil {
+			msg, _ := errorMessage(err)
+			s.certificateDetailResponse(w, r, id, &flashMessage{Kind: "error", Message: msg})
+			return
+		}
+		s.recordAudit(r, domain.AuditCertificateSignedByCA, "certificate", record.ID.String(), "adcs")
+		s.renderIssuedCertificate(w, r, record, &flashMessage{
+			Kind:    "success",
+			Message: fmt.Sprintf("Certificate issued by ADCS, valid until %s.", record.ExpiresIn()),
+		})
+
 	default:
 		rootCAID, err := uuid.Parse(action)
 		if err != nil {
@@ -655,67 +662,6 @@ func (s *Server) renderIssuedCertificate(w http.ResponseWriter, r *http.Request,
 	s.decorateCertificateView(r, view, record)
 	view["Flash"] = flash
 	s.render.Partial(w, http.StatusOK, "certificate-detail-response", view)
-}
-
-// handleCertificateBulkRenew renews a batch of selected internal certificates
-// against one chosen Root CA, producing a fresh certificate record per
-// selection (mirroring how a renewal ticket already works) rather than
-// mutating the originals in place. One bad record doesn't abort the rest of
-// the batch — failures are tallied and reported alongside the successes.
-func (s *Server) handleCertificateBulkRenew(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	rawIDs := r.PostForm["certificate_ids"]
-	if len(rawIDs) == 0 {
-		s.certificateTableResponse(w, r, &flashMessage{Kind: "error", Message: "select at least one certificate to renew"})
-		return
-	}
-	rootCAID, err := uuid.Parse(r.PostFormValue("root_ca_id"))
-	if err != nil {
-		s.certificateTableResponse(w, r, &flashMessage{Kind: "error", Message: "choose a Root CA to sign with"})
-		return
-	}
-	days, _ := strconv.Atoi(r.PostFormValue("days"))
-	if days <= 0 {
-		days = 365
-	}
-	ids := make([]uuid.UUID, 0, len(rawIDs))
-	for _, raw := range rawIDs {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-
-	outcomes := s.certs.BulkRenewInternal(r.Context(), service.BulkRenewInput{
-		CertificateIDs: ids,
-		RootCAID:       rootCAID,
-		Days:           days,
-	})
-	succeeded, failed := 0, 0
-	for _, o := range outcomes {
-		if o.Err != nil {
-			failed++
-			continue
-		}
-		succeeded++
-		s.recordAudit(r, domain.AuditCertificateRenewed, "certificate", o.NewCertificate.ID.String(),
-			fmt.Sprintf("renewed from %s (%s), %d days", o.CertificateID, o.CommonName, days))
-	}
-
-	var flash *flashMessage
-	switch {
-	case failed == 0:
-		flash = &flashMessage{Kind: "success", Message: fmt.Sprintf("Renewed %d certificate(s).", succeeded)}
-	case succeeded == 0:
-		flash = &flashMessage{Kind: "error", Message: fmt.Sprintf("Renewal failed for all %d certificate(s).", failed)}
-	default:
-		flash = &flashMessage{Kind: "warning", Message: fmt.Sprintf("Renewed %d certificate(s); %d failed.", succeeded, failed)}
-	}
-	s.certificateTableResponse(w, r, flash)
 }
 
 // handleCertificateDelete removes a certificate and its key material.
@@ -817,12 +763,14 @@ func (s *Server) decorateCertificateView(r *http.Request, view map[string]any, r
 	if shared, err := s.certs.SharedFingerprint(r.Context(), record); err == nil {
 		view["SharedWith"] = shared
 	}
-	// Only a pending, in-app-generated CSR can be signed at all (self-sign or
-	// Root CA) — no need to load the Root CA list for every other cert.
+	// Only a pending, in-app-generated CSR can be signed at all (self-sign,
+	// Root CA, or ADCS) — no need to load the Root CA list or check ADCS
+	// for every other cert.
 	if record.Origin == domain.OriginGenerated && record.Status != domain.CertIssued {
 		if rootCAs, err := s.certs.ListRootCAs(r.Context()); err == nil {
 			view["RootCAs"] = rootCAs
 		}
+		view["ADCSEnabled"] = s.certs.ADCSEnabled()
 	}
 }
 

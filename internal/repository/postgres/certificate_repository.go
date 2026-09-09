@@ -32,7 +32,7 @@ const certificateColumns = `id, common_name, organization, organizational_unit, 
 	csr_pem, private_key_pem, private_key_encrypted, certificate_pem, chain_pem, self_signed,
 	signed_by_root_ca_id, subject, issuer, signature_algorithm, public_key_algorithm, key_size,
 	chain_length, fingerprint_sha256, ext_key_usage, not_before, not_after, status, notes,
-	digicert_order_id, created_at, updated_at`
+	digicert_order_id, signed_by_adcs, adcs_request_id, created_at, updated_at`
 
 // Create inserts a new certificate record.
 func (r *CertificateRepository) Create(ctx context.Context, c *domain.Certificate) error {
@@ -69,13 +69,13 @@ func (r *CertificateRepository) Update(ctx context.Context, c *domain.Certificat
 		    signature_algorithm = $7, public_key_algorithm = $8, key_size = $9, chain_length = $10,
 		    fingerprint_sha256 = $11, ext_key_usage = $12, not_before = $13, not_after = $14,
 		    status = $15, notes = $16, owner = $17, signed_by_root_ca_id = $18, digicert_order_id = $19,
-		    updated_at = now()
+		    signed_by_adcs = $20, adcs_request_id = $21, updated_at = now()
 		WHERE id = $1
 		RETURNING updated_at`
 	err := r.pool.QueryRow(ctx, q, c.ID, c.CertificatePEM, c.ChainPEM, c.SelfSigned, c.Subject,
 		c.Issuer, c.SignatureAlgorithm, c.PublicKeyAlgorithm, c.KeySize, c.ChainLength,
 		c.FingerprintSHA256, nonNil(c.ExtKeyUsage), c.NotBefore, c.NotAfter, string(c.Status), c.Notes, c.Owner,
-		c.SignedByRootCAID, c.DigiCertOrderID,
+		c.SignedByRootCAID, c.DigiCertOrderID, c.SignedByADCS, c.ADCSRequestID,
 	).Scan(&c.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
@@ -209,7 +209,8 @@ func scanCertificate(rows pgx.Rows) (*domain.Certificate, error) {
 		&c.KeyAlgorithm, &c.KeyBits, &c.KeyCurve, &c.CSRPEM, &c.PrivateKeyPEM, &c.PrivateKeyEncrypted,
 		&c.CertificatePEM, &c.ChainPEM, &c.SelfSigned, &c.SignedByRootCAID, &c.Subject, &c.Issuer,
 		&c.SignatureAlgorithm, &c.PublicKeyAlgorithm, &c.KeySize, &c.ChainLength, &c.FingerprintSHA256,
-		&c.ExtKeyUsage, &c.NotBefore, &c.NotAfter, &status, &c.Notes, &c.DigiCertOrderID, &c.CreatedAt, &c.UpdatedAt)
+		&c.ExtKeyUsage, &c.NotBefore, &c.NotAfter, &status, &c.Notes, &c.DigiCertOrderID,
+		&c.SignedByADCS, &c.ADCSRequestID, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("certificate repo: scan: %w", err)
 	}

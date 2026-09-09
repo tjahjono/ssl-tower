@@ -63,6 +63,7 @@ var settingKeys = []string{
 	domain.SettingLDAPURL, domain.SettingLDAPBindDN, domain.SettingLDAPBindPassword,
 	domain.SettingLDAPBaseDN, domain.SettingLDAPUserFilter, domain.SettingLDAPGroupFilter,
 	domain.SettingLDAPRoleMapEditor, domain.SettingLDAPRoleMapViewer, domain.SettingLDAPRoleMapRequester,
+	domain.SettingADCSEndpoint, domain.SettingADCSUsername, domain.SettingADCSPassword, domain.SettingADCSTemplate,
 }
 
 // Bootstrap seeds app_settings from seed, but only for keys that don't
@@ -108,6 +109,10 @@ func (s *SettingsService) Bootstrap(ctx context.Context, seed SeedValues) error 
 	seedIfMissing(domain.SettingLDAPRoleMapEditor, strings.Join(seed.Settings.LDAPRoleMapEditor, ";"))
 	seedIfMissing(domain.SettingLDAPRoleMapViewer, strings.Join(seed.Settings.LDAPRoleMapViewer, ";"))
 	seedIfMissing(domain.SettingLDAPRoleMapRequester, strings.Join(seed.Settings.LDAPRoleMapRequester, ";"))
+	seedIfMissing(domain.SettingADCSEndpoint, seed.Settings.ADCSEndpoint)
+	seedIfMissing(domain.SettingADCSUsername, seed.Settings.ADCSUsername)
+	seedIfMissing(domain.SettingADCSPassword, seed.Settings.ADCSPassword)
+	seedIfMissing(domain.SettingADCSTemplate, seed.Settings.ADCSTemplate)
 	seedIfMissing(domain.SettingEncryptionKey, seed.EncryptionKey)
 
 	if len(toSeed) > 0 {
@@ -161,6 +166,11 @@ func (s *SettingsService) Reload(ctx context.Context) error {
 		LDAPRoleMapEditor:    splitSemicolon(values[domain.SettingLDAPRoleMapEditor]),
 		LDAPRoleMapViewer:    splitSemicolon(values[domain.SettingLDAPRoleMapViewer]),
 		LDAPRoleMapRequester: splitSemicolon(values[domain.SettingLDAPRoleMapRequester]),
+
+		ADCSEndpoint: values[domain.SettingADCSEndpoint],
+		ADCSUsername: values[domain.SettingADCSUsername],
+		ADCSPassword: values[domain.SettingADCSPassword],
+		ADCSTemplate: values[domain.SettingADCSTemplate],
 	}
 	s.current.Store(&next)
 	return nil
@@ -179,6 +189,9 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 		return domain.Invalid("expiry_final_days", "must be less than or equal to the critical threshold")
 	}
 	if err := validateLDAPPatch(patch); err != nil {
+		return err
+	}
+	if err := validateADCSPatch(patch); err != nil {
 		return err
 	}
 
@@ -205,6 +218,11 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 		domain.SettingLDAPRoleMapEditor:    strings.Join(patch.LDAPRoleMapEditor, ";"),
 		domain.SettingLDAPRoleMapViewer:    strings.Join(patch.LDAPRoleMapViewer, ";"),
 		domain.SettingLDAPRoleMapRequester: strings.Join(patch.LDAPRoleMapRequester, ";"),
+
+		domain.SettingADCSEndpoint: strings.TrimSpace(patch.ADCSEndpoint),
+		domain.SettingADCSUsername: strings.TrimSpace(patch.ADCSUsername),
+		domain.SettingADCSPassword: patch.ADCSPassword,
+		domain.SettingADCSTemplate: strings.TrimSpace(patch.ADCSTemplate),
 	}
 	if err := s.repo.SetMany(ctx, values, updatedBy); err != nil {
 		return err
@@ -243,6 +261,30 @@ func validateLDAPPatch(patch domain.AppSettings) error {
 	}
 	if len(patch.LDAPRoleMapEditor) == 0 && len(patch.LDAPRoleMapViewer) == 0 && len(patch.LDAPRoleMapRequester) == 0 {
 		return domain.Invalid("ldap_role_map", "at least one role mapping (editor, viewer, or requester) is required — otherwise every LDAP login would be denied")
+	}
+	return nil
+}
+
+// validateADCSPatch enforces the same "if ADCSEndpoint is set, these become
+// required" cross-field rule config.Load used to enforce at boot for the
+// old env-only fields (v1.14) — moved here for the same reason
+// validateLDAPPatch's rule was in v1.8: once the portal governs the live
+// value, a bad *seed* shouldn't block boot forever, only a bad *live edit*
+// should be rejected. See CLAUDE.md's v1.16 locked decision.
+func validateADCSPatch(patch domain.AppSettings) error {
+	endpoint := strings.TrimSpace(patch.ADCSEndpoint)
+	if endpoint == "" {
+		return nil
+	}
+	required := map[string]string{
+		"ADCS username": patch.ADCSUsername,
+		"ADCS password": patch.ADCSPassword,
+		"ADCS template": patch.ADCSTemplate,
+	}
+	for label, v := range required {
+		if strings.TrimSpace(v) == "" {
+			return domain.Invalid("adcs", label+" is required when the ADCS endpoint is set")
+		}
 	}
 	return nil
 }

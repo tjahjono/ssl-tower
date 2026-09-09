@@ -2,6 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"errors"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -9,9 +16,71 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/adcs"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/certutil"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/secret"
 )
+
+// fakeADCSClient is an in-memory adcs.Client — there is no live ADCS server
+// to test against (see CLAUDE.md's ADCS section), so this issues a real,
+// throwaway CA-signed leaf for whatever CSR it's given, mirroring
+// fakeDigiCertClient's role for the DigiCert integration's own tests. err,
+// when set, makes Enroll fail instead — used to test SignWithADCS's error
+// path without needing a specific ADCS failure mode.
+type fakeADCSClient struct {
+	err error
+}
+
+func (f *fakeADCSClient) Enroll(_ context.Context, csrDER []byte) (*adcs.EnrollResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		return nil, err
+	}
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Fake ADCS Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		return nil, err
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		return nil, err
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      csr.Subject,
+		DNSNames:     csr.DNSNames,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, csr.PublicKey, caKey)
+	if err != nil {
+		return nil, err
+	}
+	leaf, err := x509.ParseCertificate(leafDER)
+	if err != nil {
+		return nil, err
+	}
+	return &adcs.EnrollResult{
+		Certificates: []*x509.Certificate{leaf, caCert},
+		RequestID:    "42",
+		Disposition:  "Issued",
+	}, nil
+}
 
 // fakeCertificateRepo is a minimal in-memory domain.CertificateRepository for
 // exercising CertificateService without a real Postgres instance.
@@ -147,6 +216,21 @@ func newTestCertificateService(t *testing.T) *CertificateService {
 	// rather than zero, which would make every certificate look perpetually
 	// healthy regardless of how close to expiry it actually is.
 	settings := newTestSettingsService(domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1})
+	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), &fakeEncryptionRotationRepository{}, sealer, settings, discardLogger(), CertificateOptions{})
+}
+
+// newTestCertificateServiceWithADCS is newTestCertificateService's sibling
+// for the ADCS tests below — ADCS configuration is portal-editable (v1.16),
+// read from settings.Current() on every SignWithADCS call, so a test that
+// needs it configured builds its own settings snapshot rather than
+// mutating the shared default.
+func newTestCertificateServiceWithADCS(t *testing.T, adcsSettings domain.AppSettings) *CertificateService {
+	t.Helper()
+	sealer, err := secret.NewSealer("")
+	if err != nil {
+		t.Fatalf("NewSealer: %v", err)
+	}
+	settings := newTestSettingsService(adcsSettings)
 	return NewCertificateService(newFakeCertificateRepo(), newFakeRootCARepo(), &fakeEncryptionRotationRepository{}, sealer, settings, discardLogger(), CertificateOptions{})
 }
 
@@ -742,113 +826,82 @@ func TestSignWithRootCAMarksCertificateInternal(t *testing.T) {
 	}
 }
 
-func TestBulkRenewInternalMixedBatch(t *testing.T) {
+func TestSignWithADCSRejectsWhenNotConfigured(t *testing.T) {
 	svc := newTestCertificateService(t)
-	caCertPEM, caKeyPEM := buildTestRootCAPEMs(t)
-	ca, err := svc.UploadRootCA(context.Background(), "Acme Internal CA", caCertPEM, caKeyPEM)
-	if err != nil {
-		t.Fatalf("UploadRootCA: %v", err)
-	}
-
-	// A valid internal, issued certificate — should renew cleanly into a
-	// brand-new record, leaving the original alone.
 	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
-		CommonName: "renew-me.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+		CommonName: "adcs.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
 	})
 	if err != nil {
 		t.Fatalf("CreateCSR: %v", err)
 	}
-	issued, err := svc.SignWithRootCA(context.Background(), pending.ID, ca.ID, 30)
-	if err != nil {
-		t.Fatalf("SignWithRootCA: %v", err)
+	if _, err := svc.SignWithADCS(context.Background(), pending.ID); err == nil {
+		t.Fatal("expected an error calling SignWithADCS with no ADCS client configured")
+	}
+	if svc.ADCSEnabled() {
+		t.Error("ADCSEnabled() must be false with no client configured")
+	}
+}
+
+func TestSignWithADCSMarksCertificateInternal(t *testing.T) {
+	svc := newTestCertificateServiceWithADCS(t, domain.AppSettings{
+		ADCSEndpoint: "https://adcs.example.com/CES", ADCSUsername: "svc-adcs", ADCSPassword: "secret", ADCSTemplate: "WebServer",
+	})
+	svc.SetADCSClientFactory(func(adcs.Config) adcs.Client { return &fakeADCSClient{} })
+	if !svc.ADCSEnabled() {
+		t.Fatal("ADCSEnabled() must be true once the endpoint is configured")
 	}
 
-	// An externally-issued certificate: not self-signed (Subject != Issuer)
-	// and not linked to an uploaded Root CA record, since Import doesn't set
-	// SignedByRootCAID — exactly what "pasted in from an outside CA" looks
-	// like. Out of scope for bulk renewal; must be reported as a failure
-	// rather than aborting the whole batch.
-	caCert, err := certutil.ParseCertificatesPEM(caCertPEM)
-	if err != nil {
-		t.Fatalf("ParseCertificatesPEM: %v", err)
-	}
-	caKey, err := certutil.ParsePrivateKeyPEM(caKeyPEM)
-	if err != nil {
-		t.Fatalf("ParsePrivateKeyPEM: %v", err)
-	}
-	extCSRPEM, _, err := certutil.CreateCSR(certutil.CSRRequest{
-		Subject: certutil.Subject{CommonName: "external.example.com"},
-		KeySpec: certutil.KeySpec{Algorithm: certutil.AlgorithmRSA, Bits: 2048},
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "adcs.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
 	})
 	if err != nil {
-		t.Fatalf("CreateCSR (external leaf): %v", err)
+		t.Fatalf("CreateCSR: %v", err)
 	}
-	extCSR, err := certutil.ParseCSRPEM(extCSRPEM)
-	if err != nil {
-		t.Fatalf("ParseCSRPEM: %v", err)
-	}
-	_, extLeafPEM, err := certutil.SignWithCA(extCSR, caCert[0], caKey, 30, nil)
-	if err != nil {
-		t.Fatalf("SignWithCA (external leaf): %v", err)
-	}
-	external, err := svc.Import(context.Background(), ImportInput{CertificatePEM: extLeafPEM})
-	if err != nil {
-		t.Fatalf("Import: %v", err)
-	}
-	if external.TrustClass() != domain.TrustExternal {
-		t.Fatalf("test setup: expected TrustExternal, got %q", external.TrustClass())
+	if pending.TrustClass() != domain.TrustPending {
+		t.Fatalf("a not-yet-issued certificate must be TrustPending, got %q", pending.TrustClass())
 	}
 
-	missingID := uuid.New()
+	signed, err := svc.SignWithADCS(context.Background(), pending.ID)
+	if err != nil {
+		t.Fatalf("SignWithADCS: %v", err)
+	}
+	if signed.SelfSigned {
+		t.Error("an ADCS-issued certificate must not be marked SelfSigned")
+	}
+	if !signed.SignedByADCS {
+		t.Error("SignedByADCS must be true after SignWithADCS")
+	}
+	if signed.ADCSRequestID != "42" {
+		t.Errorf("ADCSRequestID = %q, want %q", signed.ADCSRequestID, "42")
+	}
+	if got := signed.TrustClass(); got != domain.TrustInternal {
+		t.Fatalf("TrustClass() = %q, want %q — an ADCS-issued certificate is internal, from the org's own CA", got, domain.TrustInternal)
+	}
+	if signed.CommonName != "adcs.example.com" {
+		t.Errorf("CommonName = %q, want it preserved from the original CSR", signed.CommonName)
+	}
+	if signed.ChainPEM == "" {
+		t.Error("expected the issuing CA's certificate to populate the chain")
+	}
+	if signed.ChainLength != 2 {
+		t.Errorf("ChainLength = %d, want 2 (leaf + the fake CA)", signed.ChainLength)
+	}
+}
 
-	outcomes := svc.BulkRenewInternal(context.Background(), BulkRenewInput{
-		CertificateIDs: []uuid.UUID{issued.ID, external.ID, missingID},
-		RootCAID:       ca.ID,
-		Days:           30,
+func TestSignWithADCSSurfacesEnrollFailure(t *testing.T) {
+	svc := newTestCertificateServiceWithADCS(t, domain.AppSettings{
+		ADCSEndpoint: "https://adcs.example.com/CES", ADCSUsername: "svc-adcs", ADCSPassword: "secret", ADCSTemplate: "WebServer",
 	})
-	if len(outcomes) != 3 {
-		t.Fatalf("expected 3 outcomes, got %d", len(outcomes))
-	}
+	svc.SetADCSClientFactory(func(adcs.Config) adcs.Client { return &fakeADCSClient{err: errors.New("adcs: access is denied")} })
 
-	renewed := outcomes[0]
-	if renewed.CertificateID != issued.ID {
-		t.Fatalf("outcomes[0].CertificateID = %v, want %v", renewed.CertificateID, issued.ID)
-	}
-	if renewed.Err != nil {
-		t.Fatalf("expected the internal certificate to renew, got error: %v", renewed.Err)
-	}
-	if renewed.NewCertificate == nil {
-		t.Fatal("expected a new certificate record for the successful renewal")
-	}
-	if renewed.NewCertificate.ID == issued.ID {
-		t.Fatal("renewal must produce a fresh record, not mutate the original in place")
-	}
-	if got := renewed.NewCertificate.TrustClass(); got != domain.TrustInternal {
-		t.Fatalf("renewed certificate TrustClass() = %q, want internal", got)
-	}
-
-	rejected := outcomes[1]
-	if rejected.Err == nil {
-		t.Fatal("expected renewing an external certificate to fail — bulk renewal is internal-only")
-	}
-	if rejected.NewCertificate != nil {
-		t.Fatal("a rejected renewal must not produce a new certificate")
-	}
-
-	missing := outcomes[2]
-	if missing.Err == nil {
-		t.Fatal("expected a nonexistent certificate ID to fail")
-	}
-
-	// The original internal certificate must be untouched — still present,
-	// still carrying its own certificate material — since renewal always
-	// creates a fresh record rather than mutating history.
-	original, err := svc.Get(context.Background(), issued.ID)
+	pending, err := svc.CreateCSR(context.Background(), CreateCSRInput{
+		CommonName: "denied.example.com", KeyAlgorithm: "rsa", KeyBits: 2048,
+	})
 	if err != nil {
-		t.Fatalf("Get (original): %v", err)
+		t.Fatalf("CreateCSR: %v", err)
 	}
-	if original.CertificatePEM != issued.CertificatePEM {
-		t.Error("the original certificate record must be left untouched by bulk renewal")
+	if _, err := svc.SignWithADCS(context.Background(), pending.ID); err == nil {
+		t.Fatal("expected SignWithADCS to surface the client's Enroll error")
 	}
 }
 

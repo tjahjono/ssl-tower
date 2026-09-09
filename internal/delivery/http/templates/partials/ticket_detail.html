@@ -76,11 +76,11 @@
                 <span class="field-label mb-2 block">Signing request</span>
                 <div class="flex flex-wrap gap-4 text-sm text-ink-3">
                   <label class="flex items-center gap-2">
-                    <input type="radio" name="csr_source" value="new" checked class="text-sky-500 focus:ring-sky-500">
+                    <input type="radio" name="csr_source" value="new" checked class="text-brand-500 focus:ring-brand-500">
                     Generate a new CSR
                   </label>
                   <label class="flex items-center gap-2">
-                    <input type="radio" name="csr_source" value="reuse" class="text-sky-500 focus:ring-sky-500">
+                    <input type="radio" name="csr_source" value="reuse" class="text-brand-500 focus:ring-brand-500">
                     Reuse the existing certificate's CSR (same key)
                   </label>
                 </div>
@@ -467,7 +467,7 @@
               </div>
               {{if .CanIncludeKeyInEmail}}
                 <label class="flex items-start gap-2 text-xs text-ink-4">
-                  <input type="checkbox" name="include_key" class="mt-0.5 rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+                  <input type="checkbox" name="include_key" class="mt-0.5 rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
                   <span>Also attach the private key <span class="text-hue-rose">— sent in the clear over email, treat this as sensitive</span></span>
                 </label>
               {{end}}

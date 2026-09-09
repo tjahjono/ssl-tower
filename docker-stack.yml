@@ -94,6 +94,31 @@ services:
       SESSION_ABSOLUTE_TIMEOUT: "720h"
       COOKIE_SECURE: "true"
       ADMIN_EMAIL: "admin@example.com"
+      # Auto-drafting renewal tickets is opt-in — empty leaves the app
+      # purely reactive.
+      RENEWAL_SWEEP_INTERVAL: ""
+      # DigiCert renewal integration — empty API key disables it entirely.
+      # Not a Docker secret (see internal/config/config.go's secretFileKeys)
+      # despite being a credential, matching a pre-existing project
+      # convention — set it directly if you use this integration.
+      DIGICERT_API_KEY: ""
+      DIGICERT_BASE_URL: "https://www.digicert.com/services/v2"
+      # ADCS CES/CEP integration — empty endpoint disables it entirely.
+      ADCS_ENDPOINT: ""
+      ADCS_USERNAME: ""
+      ADCS_TEMPLATE: ""
+      # LDAP authentication — only a first-boot seed (v1.8: portal-editable
+      # from /settings from then on, so these can just as well be left empty
+      # here and configured after the first deploy instead). Empty URL
+      # disables it entirely.
+      LDAP_URL: ""
+      LDAP_BIND_DN: ""
+      LDAP_BASE_DN: ""
+      LDAP_USER_FILTER: ""
+      LDAP_GROUP_FILTER: ""
+      LDAP_ROLE_MAP_EDITOR: ""
+      LDAP_ROLE_MAP_VIEWER: ""
+      LDAP_ROLE_MAP_REQUESTER: ""
       # Every *_FILE var below is this app's Docker-secrets convention (see
       # internal/config/config.go's applySecretFiles): at boot it reads the
       # named file's trimmed contents into the plain env var with the same
@@ -115,6 +140,12 @@ services:
       # rather than just leaving that alert channel off.
       SMTP_PASSWORD_FILE: /run/secrets/ssl_tower_smtp_password
       TEAMS_WEBHOOK_URL_FILE: /run/secrets/ssl_tower_teams_webhook
+      # Same "only if configured, and only if make docker-secrets actually
+      # created it" story as the two above — re-comment both the line here
+      # and the matching entries in the two `secrets:` blocks if you don't
+      # use LDAP and/or ADCS.
+      LDAP_BIND_PASSWORD_FILE: /run/secrets/ssl_tower_ldap_bind_password
+      ADCS_PASSWORD_FILE: /run/secrets/ssl_tower_adcs_password
     secrets:
       - ssl_tower_database_url
       - ssl_tower_encryption_key
@@ -122,6 +153,8 @@ services:
       - ssl_tower_admin_password
       - ssl_tower_smtp_password
       - ssl_tower_teams_webhook
+      - ssl_tower_ldap_bind_password
+      - ssl_tower_adcs_password
     ports:
       - "8080:8080"
     networks:
@@ -157,4 +190,11 @@ secrets:
   ssl_tower_smtp_password:
     external: true
   ssl_tower_teams_webhook:
+    external: true
+  # Re-comment these two (and their references above) if you don't use
+  # LDAP and/or ADCS — `make docker-secrets` only creates them when it
+  # finds a non-empty LDAP_BIND_PASSWORD/ADCS_PASSWORD in .env.
+  ssl_tower_ldap_bind_password:
+    external: true
+  ssl_tower_adcs_password:
     external: true

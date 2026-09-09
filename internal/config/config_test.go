@@ -214,3 +214,37 @@ func TestLoadWithoutLDAPURLIgnoresOtherLDAPSettings(t *testing.T) {
 		t.Fatalf("Load: expected no error with LDAP_URL unset, got %v", err)
 	}
 }
+
+var adcsKeys = []string{"ADCS_ENDPOINT", "ADCS_USERNAME", "ADCS_PASSWORD", "ADCS_TEMPLATE"}
+
+func TestLoadWithoutADCSEndpointIgnoresOtherADCSSettings(t *testing.T) {
+	setBaseRequiredEnv(t)
+	clearEnv(t, adcsKeys...)
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: expected no error with ADCS_ENDPOINT unset, got %v", err)
+	}
+}
+
+// Load no longer rejects an incomplete ADCS config (ADCS_ENDPOINT set but
+// username/password/template missing) — that cross-field validation moved
+// to service.SettingsService.Update in v1.16, the same move v1.8 made for
+// LDAP (see TestLoadWithoutLDAPURLIgnoresOtherLDAPSettings's comment just
+// above). These fields are only a first-boot seed now; a bad seed value
+// shouldn't block boot when the portal governs the live value from the
+// second boot onward. See CLAUDE.md's v1.16 locked decision.
+
+func TestLoadAcceptsValidADCSConfig(t *testing.T) {
+	setBaseRequiredEnv(t)
+	clearEnv(t, adcsKeys...)
+	os.Setenv("ADCS_ENDPOINT", "https://adcs.example.com/ADPolicyProvider_CEP_UsernamePassword/service.svc/CES")
+	os.Setenv("ADCS_USERNAME", "svc-adcs")
+	os.Setenv("ADCS_PASSWORD", "svcpass")
+	os.Setenv("ADCS_TEMPLATE", "WebServer")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: unexpected error with a fully valid ADCS config: %v", err)
+	}
+	if cfg.ADCSTemplate != "WebServer" {
+		t.Fatalf("ADCSTemplate = %q, want %q", cfg.ADCSTemplate, "WebServer")
+	}
+}

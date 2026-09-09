@@ -13,9 +13,8 @@
 -- that in reverse, and the sweeper just queries it
 -- (WHERE result_certificate_id = <certificate id>) to find a certificate's
 -- origin ticket/requester. A certificate with no such ticket (created
--- directly in the vault, or produced by bulk renewal — see
--- CertificateService.BulkRenewInternal) has no resolvable requester and is
--- silently skipped by the sweeper.
+-- directly in the vault, say) has no resolvable requester and is silently
+-- skipped by the sweeper.
 ALTER TABLE certificate_requests ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN NOT NULL DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS certificate_requests_result_certificate_idx ON certificate_requests (result_certificate_id);

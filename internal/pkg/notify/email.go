@@ -63,12 +63,19 @@ func (n *EmailNotifier) TransportReady() bool {
 	return n != nil && strings.TrimSpace(n.cfg.Host) != "" && strings.TrimSpace(n.cfg.From) != ""
 }
 
-// Send delivers a plain-text email to every configured alert recipient.
+// Send delivers an email to every configured alert recipient — plain text
+// and a simple HTML rendering of the same content (multipart/alternative),
+// so a plain-text client sees exactly what it always saw while everything
+// else gets the styled version.
 func (n *EmailNotifier) Send(subject, body string) error {
 	if !n.Enabled() {
 		return nil
 	}
-	return n.deliver(n.cfg.To, buildMIME(n.cfg.From, n.cfg.To, subject, body))
+	msg, err := buildMIME(n.cfg.From, n.cfg.To, subject, body)
+	if err != nil {
+		return fmt.Errorf("notify: build message: %w", err)
+	}
+	return n.deliver(n.cfg.To, msg)
 }
 
 // Attachment is one file attached to an email sent via SendWithAttachment.
@@ -188,35 +195,73 @@ func sanitizeHeaderValue(s string) string {
 	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
 
-func buildMIME(from string, to []string, subject, body string) []byte {
-	var b strings.Builder
+// buildAlternativeBody renders one multipart/alternative part carrying both
+// a text/plain and a text/html rendering of the same content — the html
+// one from renderHTMLBody's simple template (see template.go). Shared by
+// buildMIME (which sends this as the whole message) and buildMultipartMIME
+// (which nests it as the first part of an outer multipart/mixed, ahead of
+// any attachments).
+func buildAlternativeBody(subject, body string) (contentType string, encoded []byte, err error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	textPart, err := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {`text/plain; charset="utf-8"`}})
+	if err != nil {
+		return "", nil, fmt.Errorf("create text part: %w", err)
+	}
+	if _, err := textPart.Write([]byte(body)); err != nil {
+		return "", nil, fmt.Errorf("write text part: %w", err)
+	}
+
+	htmlPart, err := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {`text/html; charset="utf-8"`}})
+	if err != nil {
+		return "", nil, fmt.Errorf("create html part: %w", err)
+	}
+	if _, err := htmlPart.Write([]byte(renderHTMLBody(subject, body))); err != nil {
+		return "", nil, fmt.Errorf("write html part: %w", err)
+	}
+
+	if err := mw.Close(); err != nil {
+		return "", nil, fmt.Errorf("close alternative writer: %w", err)
+	}
+	return fmt.Sprintf("multipart/alternative; boundary=%q", mw.Boundary()), buf.Bytes(), nil
+}
+
+func buildMIME(from string, to []string, subject, body string) ([]byte, error) {
+	altContentType, altBody, err := buildAlternativeBody(subject, body)
+	if err != nil {
+		return nil, fmt.Errorf("build alternative body: %w", err)
+	}
+	var b bytes.Buffer
 	fmt.Fprintf(&b, "From: %s\r\n", sanitizeHeaderValue(from))
 	fmt.Fprintf(&b, "To: %s\r\n", sanitizeHeaderValue(strings.Join(to, ", ")))
 	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeaderValue(subject))
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
-	b.WriteString(body)
-	b.WriteString("\r\n")
-	return []byte(b.String())
+	fmt.Fprintf(&b, "Content-Type: %s\r\n\r\n", altContentType)
+	b.Write(altBody)
+	return b.Bytes(), nil
 }
 
-// buildMultipartMIME builds a multipart/mixed message: a text/plain part
-// (the body) followed by one part per attachment, each base64-encoded per
-// RFC 2045 (mime/multipart.Writer writes part bodies verbatim, so the
-// base64 encoding — and its required 76-column line wrapping — is done by
-// hand here).
+// buildMultipartMIME builds a multipart/mixed message: a multipart/
+// alternative part (text and simple HTML renderings of the same body, see
+// buildAlternativeBody) followed by one part per attachment, each
+// base64-encoded per RFC 2045 (mime/multipart.Writer writes part bodies
+// verbatim, so the base64 encoding — and its required 76-column line
+// wrapping — is done by hand here).
 func buildMultipartMIME(from string, to []string, subject, body string, attachments []Attachment) ([]byte, error) {
 	var parts bytes.Buffer
 	mw := multipart.NewWriter(&parts)
 
-	textPart, err := mw.CreatePart(textproto.MIMEHeader{
-		"Content-Type": {`text/plain; charset="utf-8"`},
-	})
+	altContentType, altBody, err := buildAlternativeBody(subject, body)
 	if err != nil {
-		return nil, fmt.Errorf("create text part: %w", err)
+		return nil, fmt.Errorf("build alternative body: %w", err)
 	}
-	if _, err := textPart.Write([]byte(body)); err != nil {
-		return nil, fmt.Errorf("write text part: %w", err)
+	altPart, err := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {altContentType}})
+	if err != nil {
+		return nil, fmt.Errorf("create alternative part: %w", err)
+	}
+	if _, err := altPart.Write(altBody); err != nil {
+		return nil, fmt.Errorf("write alternative part: %w", err)
 	}
 
 	for _, attachment := range attachments {

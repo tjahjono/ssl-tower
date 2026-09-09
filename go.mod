@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/pquerna/otp v1.5.0
+	go.mozilla.org/pkcs7 v0.10.0
 	golang.org/x/crypto v0.54.0
 	software.sslmate.com/src/go-pkcs12 v0.7.3
 )

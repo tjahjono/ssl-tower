@@ -169,6 +169,24 @@ type Certificate struct {
 	// ID is what lets the renewal use DigiCert's faster reissue path instead
 	// of placing a brand-new order — see DigiCertService.Submit.
 	DigiCertOrderID string
+
+	// SignedByADCS marks a certificate issued through the ADCS (Active
+	// Directory Certificate Services) CES/CEP integration — see
+	// CertificateService.SignWithADCS and internal/pkg/adcs. A dedicated
+	// bool rather than reusing SignedByRootCAID: unlike an uploaded/
+	// generated Root CA, there is no in-app CA record to point a foreign
+	// key at — ADCS's own CA lives entirely outside this app. TrustClass
+	// treats this the same as a self-signed or Root-CA-signed certificate:
+	// internal, since it was issued by the organization's own CA, not a
+	// publicly-trusted one.
+	SignedByADCS bool
+	// ADCSRequestID is the request/serial ID ADCS's RSTR response reported
+	// for this issuance, if any — purely informational (for looking the
+	// request up on the CA server), never used to decide trust class or
+	// gate any behavior. Empty whenever SignedByADCS is false, and may
+	// still be empty even when true if the server's response didn't carry
+	// one.
+	ADCSRequestID string
 }
 
 // HasPrivateKey reports whether this record holds key material at all —
@@ -355,14 +373,15 @@ func (t CertTrustClass) Label() string {
 	}
 }
 
-// TrustClass classifies an issued certificate as internal (self-signed, or
-// signed by a Root CA this app holds) or external (uploaded/attached from
-// an outside CA) — empty for anything not yet issued.
+// TrustClass classifies an issued certificate as internal (self-signed,
+// signed by a Root CA this app holds, or issued by ADCS) or external
+// (uploaded/attached from an outside CA) — empty for anything not yet
+// issued.
 func (c *Certificate) TrustClass() CertTrustClass {
 	if c == nil || !c.HasCertificate() {
 		return TrustPending
 	}
-	if c.SelfSigned || c.SignedByRootCAID != nil {
+	if c.SelfSigned || c.SignedByRootCAID != nil || c.SignedByADCS {
 		return TrustInternal
 	}
 	return TrustExternal

@@ -80,6 +80,10 @@ func run() error {
 			LDAPRoleMapEditor:    cfg.LDAPRoleMapEditor,
 			LDAPRoleMapViewer:    cfg.LDAPRoleMapViewer,
 			LDAPRoleMapRequester: cfg.LDAPRoleMapRequester,
+			ADCSEndpoint:         cfg.ADCSEndpoint,
+			ADCSUsername:         cfg.ADCSUsername,
+			ADCSPassword:         cfg.ADCSPassword,
+			ADCSTemplate:         cfg.ADCSTemplate,
 		},
 		EncryptionKey: cfg.EncryptionKey,
 	}
@@ -111,6 +115,10 @@ func run() error {
 	rootCARepo := postgres.NewRootCARepository(pool)
 	rotationRepo := postgres.NewEncryptionRotationRepository(pool)
 
+	// ADCS is read live from SettingsService on every SignWithADCS call
+	// (v1.16: portal-editable — see CertificateService.adcsFactory), not
+	// built once here — cfg.ADCS* above is only ever used to seed
+	// app_settings on a database's first boot.
 	certSvc := service.NewCertificateService(certRepo, rootCARepo, rotationRepo, sealer, settingsSvc, log, service.CertificateOptions{
 		WarningPercent:  cfg.ExpiryWarningPercent,
 		CriticalPercent: cfg.ExpiryCriticalPercent,

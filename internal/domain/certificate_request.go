@@ -267,9 +267,9 @@ type CertificateRequestRepository interface {
 	// fulfillment produced the given certificate — a certificate's "origin
 	// ticket", used by the auto-draft renewal sweeper to find who to draft
 	// the renewal ticket for. Returns ErrNotFound when the certificate
-	// wasn't produced by any ticket (created directly in the vault, or by
-	// bulk renewal), which the sweeper treats as "no resolvable requester,
-	// skip it" rather than an error.
+	// wasn't produced by any ticket (created directly in the vault, say),
+	// which the sweeper treats as "no resolvable requester, skip it" rather
+	// than an error.
 	LatestByResultCertificateID(ctx context.Context, certificateID uuid.UUID) (*CertificateRequest, error)
 	// HasOpenRenewalFor reports whether a pending or in-progress renewal
 	// ticket already targets this certificate, so the auto-draft sweeper

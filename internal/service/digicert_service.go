@@ -53,8 +53,8 @@ type DigiCertSubmitInput struct {
 
 // Submit generates a fresh key pair and CSR from the certificate being
 // renewed — reusing the same certutil-backed CreateCSR building block
-// ApproveInternal and BulkRenewInternal already use, seeded from the
-// existing certificate's subject and SANs — and submits it to DigiCert: a
+// ApproveInternal already uses, seeded from the existing certificate's
+// subject and SANs — and submits it to DigiCert: a
 // reissue against the certificate's existing DigiCertOrderID when it has
 // one (DigiCert's faster path), or a brand-new order otherwise. The CSR's
 // key pair is generated and stored via the normal vault CreateCSR path (so
@@ -64,9 +64,10 @@ type DigiCertSubmitInput struct {
 // issued certificate to.
 //
 // Scoped to in-progress external renewal tickets only: TrustClass must be
-// external (there's no CA to call for an internal certificate — that's what
-// BulkRenewInternal is for) and Type must be renewal naming an existing
-// certificate, since a brand-new external certificate has no prior
+// external (an internal certificate is renewed through the ticket queue's
+// own internal-approval flow instead — there's no outside CA to call for
+// one) and Type must be renewal naming an existing certificate, since a
+// brand-new external certificate has no prior
 // subject/SANs to seed the CSR from and still goes through the existing
 // manual-paste flow.
 func (s *DigiCertService) Submit(ctx context.Context, in DigiCertSubmitInput) (*domain.CertificateRequest, error) {

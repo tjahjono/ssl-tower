@@ -4,26 +4,11 @@
 {{end}}
 
 {{define "certificate-table"}}
-<form id="certificate-table" hx-post="/certificates/bulk-renew" hx-target="#certificate-table" hx-swap="outerHTML"
-      class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
-  {{if .RootCAs}}
-  <div class="flex flex-wrap items-center gap-2 border-b border-line/5 bg-line/[0.02] px-4 py-3">
-    <span class="text-xs text-ink-5">Bulk renew internal (checked below), signed by</span>
-    <select name="root_ca_id" required class="field-select py-1.5 pl-3 pr-9 text-sm">
-      {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-    </select>
-    <label for="bulk-renew-days" class="text-xs text-ink-5">for</label>
-    <input id="bulk-renew-days" name="days" type="number" min="1" max="3650" value="365"
-           class="field-input w-24 px-3 py-1.5 text-sm">
-    <span class="text-xs text-ink-5">days</span>
-    <button type="submit" class="btn-secondary px-3 py-1.5 text-sm">Renew selected</button>
-  </div>
-  {{end}}
+<div id="certificate-table" class="overflow-hidden rounded-xl border border-line/5 bg-card/40">
   <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-line/5 text-sm">
       <thead class="bg-line/[0.02] text-xs uppercase tracking-wide text-ink-5">
         <tr>
-          <th scope="col" class="w-8 px-4 py-3"></th>
           <th scope="col" class="px-4 py-3 text-left font-medium">Common name</th>
           <th scope="col" class="hidden px-4 py-3 text-left font-medium md:table-cell">Owner</th>
           <th scope="col" class="px-4 py-3 text-left font-medium">Key</th>
@@ -37,13 +22,6 @@
         {{range .Certificates}}
         {{$hs := .HealthStatus $.WarningDays $.CriticalDays $.WarningPercent $.CriticalPercent}}
         <tr id="certificate-{{.ID}}" class="transition hover:bg-line/[0.02]">
-          <td class="px-4 py-3">
-            {{if and (eq .TrustClass "internal") (eq .Status "issued")}}
-            <input type="checkbox" name="certificate_ids" value="{{.ID}}"
-                   title="select for bulk renewal"
-                   class="h-4 w-4 rounded border-line/25 text-hue-sky focus:ring-hue-sky">
-            {{end}}
-          </td>
           <td class="px-4 py-3">
             <a href="/certificates/{{.ID}}" class="font-medium text-ink-1 hover:text-hue-sky">{{.CommonName}}</a>
             <p class="text-xs text-ink-5">{{.SANSummary}}</p>
@@ -96,7 +74,7 @@
         </tr>
         {{else}}
         <tr>
-          <td colspan="8" class="px-4 py-10 text-center text-ink-5">
+          <td colspan="7" class="px-4 py-10 text-center text-ink-5">
             No certificates yet — generate a CSR or upload one above.
           </td>
         </tr>
@@ -104,5 +82,5 @@
       </tbody>
     </table>
   </div>
-</form>
+</div>
 {{end}}

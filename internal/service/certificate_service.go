@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/adcs"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/certutil"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/secret"
 )
@@ -53,6 +54,15 @@ type CertificateService struct {
 	// StartEncryptionKeyRotation. nil means no rotation has ever been
 	// started this process's lifetime.
 	rotation atomic.Pointer[rotationJob]
+	// adcsClientFactory builds an adcs.Client from live config on every
+	// SignWithADCS call — mirrors AuthOptions.LDAPClientFactory's role for
+	// LDAP (v1.8): production always defaults to adcs.NewHTTPClient (see
+	// adcsFactory below), and tests substitute a fake via
+	// SetADCSClientFactory. This is a factory, not a cached client, because
+	// ADCS configuration is now portal-editable (v1.16) and read fresh from
+	// settings.Current() on every call, the same "always current" shape
+	// SettingsService.EmailNotifier/TeamsNotifier already use.
+	adcsClientFactory func(adcs.Config) adcs.Client
 }
 
 // CertificateOptions configures the percent-of-lifetime-remaining expiry
@@ -90,6 +100,29 @@ func NewCertificateService(repo domain.CertificateRepository, rootCAs domain.Roo
 // periodic sweep. Optional — a CertificateService with no alerter configured
 // just skips notification.
 func (s *CertificateService) SetAlerter(a Alerter) { s.alerter = a }
+
+// SetADCSClientFactory overrides how SignWithADCS builds its adcs.Client —
+// tests use this to substitute a fake; production never calls it and gets
+// adcs.NewHTTPClient via adcsFactory's default.
+func (s *CertificateService) SetADCSClientFactory(f func(adcs.Config) adcs.Client) {
+	s.adcsClientFactory = f
+}
+
+func (s *CertificateService) adcsFactory() func(adcs.Config) adcs.Client {
+	if s.adcsClientFactory != nil {
+		return s.adcsClientFactory
+	}
+	return func(cfg adcs.Config) adcs.Client { return adcs.NewHTTPClient(cfg) }
+}
+
+// ADCSEnabled reports whether the ADCS integration is configured (portal-
+// editable, v1.16 — see SettingsService) — gates whether the pending-
+// certificate detail page's "Sign with" dropdown offers "Submit to ADCS"
+// at all. Reads live settings directly rather than constructing a client
+// just to check, since that's all this needs.
+func (s *CertificateService) ADCSEnabled() bool {
+	return strings.TrimSpace(s.settings.Current().ADCSEndpoint) != ""
+}
 
 // currentSealer returns the sealer actively used to encrypt/decrypt stored
 // private keys — always the live one, even immediately after a successful
@@ -395,8 +428,8 @@ type CloneCSRInput struct {
 // off), so it's copied across as-is with no decrypt/re-encrypt step, exactly
 // like every other field on the record. The source record itself is left
 // untouched — a renewal is always a new record, per this app's established
-// convention (see BulkRenewInternal), even when the key material is shared
-// between the two.
+// convention (a renewal ticket's ApproveInternal already works the same
+// way), even when the key material is shared between the two.
 func (s *CertificateService) CloneCSR(ctx context.Context, in CloneCSRInput) (*domain.Certificate, error) {
 	source, err := s.repo.GetByID(ctx, in.SourceCertificateID)
 	if err != nil {
@@ -887,6 +920,58 @@ func (s *CertificateService) GenerateRootCA(ctx context.Context, name string, su
 	return record, nil
 }
 
+// SignWithADCS submits the given pending certificate's stored CSR to ADCS
+// (Active Directory Certificate Services) via CES/CEP and applies whatever
+// it issues — the third "sign with" option on the pending-certificate
+// detail page, alongside self-sign and an in-app Root CA (v1.9's unified
+// sign_action dropdown). Unlike SelfSign/SignWithRootCA, there is no
+// validDays parameter: ADCS's own certificate template dictates the issued
+// certificate's validity, not the caller — applyIssuedCert reads
+// NotBefore/NotAfter straight off whatever ADCS actually returned, exactly
+// as it already does for an imported or DigiCert-attached certificate.
+func (s *CertificateService) SignWithADCS(ctx context.Context, id uuid.UUID) (*domain.Certificate, error) {
+	cur := s.settings.Current()
+	if strings.TrimSpace(cur.ADCSEndpoint) == "" {
+		return nil, domain.Invalid("adcs", "ADCS is not configured — set it up from /settings")
+	}
+	record, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := certutil.ParseCSRPEM(record.CSRPEM)
+	if err != nil {
+		return nil, err
+	}
+	client := s.adcsFactory()(adcs.Config{
+		Endpoint: cur.ADCSEndpoint,
+		Username: cur.ADCSUsername,
+		Password: cur.ADCSPassword,
+		Template: cur.ADCSTemplate,
+	})
+	result, err := client.Enroll(ctx, parsed.Raw)
+	if err != nil {
+		return nil, fmt.Errorf("certificate service: adcs enroll: %w", err)
+	}
+	if len(result.Certificates) == 0 {
+		return nil, fmt.Errorf("certificate service: adcs returned no certificate")
+	}
+	leaf := result.Certificates[0]
+	var chainPEM strings.Builder
+	for _, c := range result.Certificates[1:] {
+		chainPEM.WriteString(certutil.EncodeCertificatePEM(c))
+	}
+	applyIssuedCert(record, leaf, certutil.EncodeCertificatePEM(leaf), chainPEM.String())
+	record.ChainLength = len(result.Certificates)
+	record.SignedByADCS = true
+	record.ADCSRequestID = result.RequestID
+
+	if err := s.repo.Update(ctx, record); err != nil {
+		return nil, err
+	}
+	s.evaluate(ctx, record)
+	return record, nil
+}
+
 // GenerateRootCAAndSign mints a brand-new Root CA and immediately signs the
 // given pending certificate with it, in one action (v1.9) — the "create a
 // new CA" option in the pending-certificate signing UI, for an admin who
@@ -895,7 +980,7 @@ func (s *CertificateService) GenerateRootCA(ctx context.Context, name string, su
 // It is deliberately just GenerateRootCA followed by SignWithRootCA with no
 // new crypto logic of its own, and no shared transaction: each method's own
 // validation/persistence behaves exactly as it already does for its other
-// callers (the Issuers page, BulkRenewInternal, ApproveInternal). If
+// callers (the Issuers page, ApproveInternal). If
 // signing fails after the CA was already created — e.g. the certificate's
 // own stored CSR is unreadable — the freshly generated CA is still valid
 // and is deliberately left in place rather than rolled back: it's a
@@ -984,98 +1069,6 @@ func (s *CertificateService) SignWithRootCA(ctx context.Context, id, rootCAID uu
 	}
 	s.evaluate(ctx, record)
 	return record, nil
-}
-
-// BulkRenewInput selects which existing certificates to renew, against
-// which Root CA, and for how long — one Root CA and validity period for the
-// whole batch, chosen once rather than per certificate.
-type BulkRenewInput struct {
-	CertificateIDs []uuid.UUID
-	RootCAID       uuid.UUID
-	Days           int
-}
-
-// BulkRenewOutcome reports what happened to one certificate in a
-// BulkRenewInternal batch — exactly one of NewCertificate or Err is set.
-type BulkRenewOutcome struct {
-	CertificateID uuid.UUID
-	// CommonName is filled in on a best-effort basis (even on failure, once
-	// the original record has been loaded) so a report can name the
-	// certificate a failure applies to, not just its ID.
-	CommonName     string
-	NewCertificate *domain.Certificate
-	Err            error
-}
-
-// BulkRenewInternal renews several already-issued *internal* certificates at
-// once, against one Root CA and validity period chosen for the whole batch.
-// Deliberately scoped to internal certificates only: external renewal has no
-// CA to call from here (see the DigiCert integration), and even once that
-// exists it's a per-ticket, admin-clicked action, not a bulk one — placing a
-// batch of orders with a paid public CA isn't a decision this method should
-// make silently.
-//
-// Each certificate renews independently through the same two-step
-// CreateCSR + SignWithRootCA pair ApproveInternal already uses for a ticket,
-// seeded from the existing record's own subject/SAN/key fields instead of
-// ticket input — producing a brand-new certificate record per input, never
-// mutating the original, exactly as a renewal ticket already does (the old
-// record stays on file as history). One certificate failing (wrong trust
-// class, incomplete subject data, a CA problem) never aborts the rest of the
-// batch — every outcome, success or failure, comes back in the returned
-// slice for the caller to report.
-func (s *CertificateService) BulkRenewInternal(ctx context.Context, in BulkRenewInput) []BulkRenewOutcome {
-	outcomes := make([]BulkRenewOutcome, 0, len(in.CertificateIDs))
-	for _, id := range in.CertificateIDs {
-		outcome := BulkRenewOutcome{CertificateID: id}
-
-		record, err := s.repo.GetByID(ctx, id)
-		if err != nil {
-			outcome.Err = err
-			outcomes = append(outcomes, outcome)
-			continue
-		}
-		outcome.CommonName = record.CommonName
-
-		if record.TrustClass() != domain.TrustInternal {
-			outcome.Err = domain.Invalid("trust_class", "only internal certificates can be bulk-renewed")
-			outcomes = append(outcomes, outcome)
-			continue
-		}
-
-		sans := strings.Join(append(append([]string{}, record.DNSNames...), record.IPAddresses...), "\n")
-		fresh, err := s.CreateCSR(ctx, CreateCSRInput{
-			CommonName:         record.CommonName,
-			Organization:       record.Organization,
-			OrganizationalUnit: record.OrganizationalUnit,
-			Country:            record.Country,
-			Province:           record.Province,
-			Locality:           record.Locality,
-			Email:              record.Email,
-			SANs:               sans,
-			KeyAlgorithm:       record.KeyAlgorithm,
-			KeyBits:            record.KeyBits,
-			KeyCurve:           record.KeyCurve,
-			Owner:              record.Owner,
-			Notes:              fmt.Sprintf("Bulk renewal of certificate %s", record.ID),
-			ExtKeyUsages:       record.ExtKeyUsage,
-		})
-		if err != nil {
-			outcome.Err = fmt.Errorf("generate renewal CSR: %w", err)
-			outcomes = append(outcomes, outcome)
-			continue
-		}
-
-		signed, err := s.SignWithRootCA(ctx, fresh.ID, in.RootCAID, in.Days)
-		if err != nil {
-			outcome.Err = fmt.Errorf("sign renewal: %w", err)
-			outcomes = append(outcomes, outcome)
-			continue
-		}
-		outcome.NewCertificate = signed
-		outcomes = append(outcomes, outcome)
-	}
-	return outcomes
 }
 
 // SetDigiCertOrderID records that a certificate was ordered through the

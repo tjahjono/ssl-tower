@@ -98,9 +98,9 @@
       </div>
 
       <div>
-        <h3 class="mb-1 text-sm font-medium text-ink-1">Issue a pending CSR (self-sign, an existing Root CA, or a brand-new one)</h3>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Issue a pending CSR (self-sign, an existing Root CA, a brand-new one, or ADCS)</h3>
         <p class="text-sm text-ink-3">
-          <span class="font-mono text-xs">POST /certificates/{id}/issue</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateIssue</span> — one endpoint for the pending-certificate detail page's single "Sign with" dropdown (v1.9; previously two separate forms/endpoints side by side). <span class="font-mono text-xs">sign_action</span> selects the path: empty or <span class="font-mono text-xs">"self"</span> calls <span class="font-mono text-xs">CertificateService.SelfSign</span>, which re-parses the stored CSR and key, calls <span class="font-mono text-xs">certutil.SelfSign</span> (issuer == subject, honours the record's stored EKU), then the same <span class="font-mono text-xs">applyIssuedCert</span> path as Attach; an existing Root CA's UUID calls <span class="font-mono text-xs">CertificateService.SignWithRootCA</span> the same way; <span class="font-mono text-xs">"new"</span> calls <span class="font-mono text-xs">CertificateService.GenerateRootCAAndSign</span>, which mints a brand-new Root CA from the request's CA-subject/key fields (the same <span class="font-mono text-xs">certutil.GenerateRootCA</span> the Issuers page's "Generate a Root CA" uses) and immediately signs with it — the new CA is left in place afterward even if signing somehow then fails, since it's still a perfectly valid CA available from the Issuers page.
+          <span class="font-mono text-xs">POST /certificates/{id}/issue</span> (<span class="font-mono text-xs">requireWrite</span>) → <span class="font-mono text-xs">handleCertificateIssue</span> — one endpoint for the pending-certificate detail page's single "Sign with" dropdown (v1.9; previously two separate forms/endpoints side by side). <span class="font-mono text-xs">sign_action</span> selects the path: empty or <span class="font-mono text-xs">"self"</span> calls <span class="font-mono text-xs">CertificateService.SelfSign</span>, which re-parses the stored CSR and key, calls <span class="font-mono text-xs">certutil.SelfSign</span> (issuer == subject, honours the record's stored EKU), then the same <span class="font-mono text-xs">applyIssuedCert</span> path as Attach; an existing Root CA's UUID calls <span class="font-mono text-xs">CertificateService.SignWithRootCA</span> the same way; <span class="font-mono text-xs">"new"</span> calls <span class="font-mono text-xs">CertificateService.GenerateRootCAAndSign</span>, which mints a brand-new Root CA from the request's CA-subject/key fields (the same <span class="font-mono text-xs">certutil.GenerateRootCA</span> the Issuers page's "Generate a Root CA" uses) and immediately signs with it — the new CA is left in place afterward even if signing somehow then fails, since it's still a perfectly valid CA available from the Issuers page; <span class="font-mono text-xs">"adcs"</span> (only offered when ADCS is configured) calls <span class="font-mono text-xs">CertificateService.SignWithADCS</span>, which submits the stored CSR to ADCS via CES/CEP (<span class="font-mono text-xs">internal/pkg/adcs</span>) and applies whatever it issues — unlike the other three paths, the certificate's validity comes from ADCS's own certificate template, not a caller-supplied day count.
         </p>
       </div>
 
@@ -132,6 +132,13 @@
         </p>
       </div>
 
+      <div>
+        <h3 class="mb-1 text-sm font-medium text-ink-1">Sending an email notification</h3>
+        <p class="text-sm text-ink-3">
+          <span class="font-mono text-xs">notify.EmailNotifier.Send</span> (alerts, to the fixed distribution list) and <span class="font-mono text-xs">SendWithAttachment</span> (a ticket's "send by email" action, to an arbitrary recipient) both build their message via a shared <span class="font-mono text-xs">buildAlternativeBody</span> — a <span class="font-mono text-xs">multipart/alternative</span> part carrying the same content twice: the original plain text, and a simple branded HTML rendering from <span class="font-mono text-xs">renderHTMLBody</span> (<span class="font-mono text-xs">internal/pkg/notify/template.go</span>) — every dynamic value HTML-escaped before insertion, since this is rendered by the recipient's own mail client with no CSP to fall back on. <span class="font-mono text-xs">Send</span> sends that as the whole message; <span class="font-mono text-xs">SendWithAttachment</span> nests it as the first part of an outer <span class="font-mono text-xs">multipart/mixed</span>, followed by one base64-encoded part per attachment. Delivery itself is <span class="font-mono text-xs">smtp.SendMail</span> (STARTTLS, port 587) or a manual <span class="font-mono text-xs">tls.Dial</span> + <span class="font-mono text-xs">smtp.NewClient</span> (implicit TLS, port 465) depending on <span class="font-mono text-xs">SMTP_PORT</span>.
+        </p>
+      </div>
+
     </div>
   </section>
 
@@ -139,7 +146,7 @@
     <h2 class="mb-3 text-sm font-semibold text-ink">Data model, in brief</h2>
     <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {{template "fact" dict "Label" "certificates" "Value" "One row per vault entry — domain.Certificate. Origin (generated/uploaded) + Status (pending/issued) describe the lifecycle; Subject/Issuer/EKU/fingerprint are captured once, at the moment it becomes issued."}}
-      {{template "fact" dict "Label" "users" "Value" "Role is one of admin/editor/viewer (domain.Role), each with CanWrite()/CanManageUsers() checked server-side on every write route."}}
+      {{template "fact" dict "Label" "users" "Value" "Role is one of admin/editor/viewer/requester (domain.Role), each with CanWrite()/CanManageUsers()/CanRequestCertificates() checked server-side on every write route."}}
       {{template "fact" dict "Label" "sessions" "Value" "Opaque random tokens, SHA-256-hashed before storage — a database leak alone never yields a usable session."}}
       {{template "fact" dict "Label" "audit_log" "Value" "Append-only, non-blocking (AuditService.Record never returns an error to its caller). Records successes plus failed logins specifically, not every attempt."}}
       {{template "fact" dict "Label" "site_content" "Value" "Key/value rich-text blocks for admin-editable pages. One row so far: key = \"help\"."}}

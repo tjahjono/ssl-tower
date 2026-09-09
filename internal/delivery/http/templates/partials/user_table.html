@@ -30,7 +30,7 @@
             {{if .IsLDAP}}<p class="text-xs text-ink-6">role synced from LDAP group membership at each login</p>{{end}}
           </td>
           <td class="px-4 py-3">
-            <select hx-post="/users/{{.ID}}/role" hx-trigger="change" hx-target="#user-table" hx-swap="outerHTML"
+            <select name="role" hx-post="/users/{{.ID}}/role" hx-trigger="change" hx-target="#user-table" hx-swap="outerHTML"
                     class="field-select py-1.5 pl-2 pr-9 text-sm">
               <option value="requester" {{if eq .Role "requester"}}selected{{end}}>Requester</option>
               <option value="viewer" {{if eq .Role "viewer"}}selected{{end}}>Viewer</option>

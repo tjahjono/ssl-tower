@@ -1177,6 +1177,361 @@ one is a cross-cutting change, not a tweak — flag it to the user first.
     least one of the three new unknown-OID keys) to confirm the issued
     certificate actually carries it.
 
+- **v1.14: ADCS (Active Directory Certificate Services) CES/CEP integration
+  — a fourth "sign with" option on the pending-certificate detail page**
+  (`internal/pkg/adcs`, `CertificateService.SignWithADCS`/`SetADCSClient`/
+  `ADCSEnabled`, `POST /certificates/{id}/issue` with `sign_action=adcs`).
+  Alongside self-sign, an in-app Root CA, and generate-a-new-Root-CA
+  (v1.9's unified dropdown), an admin can now submit a pending certificate's
+  stored CSR straight to a real Microsoft ADCS server and have it applied
+  the moment ADCS issues it — no CSR export/re-import round trip needed.
+  - **Scope decisions, made explicitly rather than assumed** (the user was
+    asked before any code was written, since each materially changes the
+    implementation): **username/password authentication**, not Windows
+    Integrated (Kerberos) or client-certificate — the only one of ADCS's
+    three CES auth profiles that works from a non-domain-joined,
+    cross-platform Go process with no extra OS-specific dependency (no
+    gokrb5, no SSPI). **CES only, no CEP** — policy discovery (MS-XCEP) is
+    skipped entirely; the CA endpoint and certificate template name are
+    fixed admin config (`ADCS_ENDPOINT`/`ADCS_TEMPLATE`), the same "fixed
+    config, not discovered" shape `internal/pkg/digicert` already uses for
+    its base URL. **A synchronous sign_action, not an async ticket-tracked
+    flow like DigiCert** — ADCS is an internal CA issuing (in the common
+    case) near-instantly, so this is modeled like `SelfSign`/
+    `SignWithRootCA`: one request, one response, done — not
+    `DigiCertService`'s submit-then-poll pattern with its own order-status
+    tracking. A template requiring manual approval on the ADCS side returns
+    a *pending* disposition with no certificate; `SignWithADCS` treats that
+    as a plain error, since this app has no concept of an async wait on an
+    internal signing path.
+  - **Wire protocol**: MS-WSTEP (`RequestSecurityToken`/
+    `RequestSecurityTokenResponse`, WS-Trust 1.3's "Issue" binding) over
+    HTTPS, authenticated via a WS-Security `UsernameToken` (`PasswordText`,
+    relying on the endpoint being HTTPS for confidentiality — the same
+    assumption ADCS's own username/password CES profile makes). The
+    request is built via `text/template` (`requestEnvelopeTemplate` in
+    `internal/pkg/adcs/wstep.go`) rather than `encoding/xml` struct
+    marshaling — WS-Security's namespace-prefixed, attribute-order-
+    sensitive shape is far easier to get byte-for-byte right against
+    Microsoft's published examples this way, and every dynamic value
+    (username, password, endpoint, template name) is escaped through the
+    template's `xmlesc` func. The certificate template is sent as a WS-Trust
+    `AdditionalContext` item (`Name="CertificateTemplate"`), since a
+    from-scratch PKCS#10 request this package builds carries no Microsoft
+    template extension of its own — that's what a CEP-driven Windows client
+    would normally stamp onto the request itself.
+  - **Response parsing is deliberately lenient on namespaces**: the
+    response structs (`internal/pkg/adcs/wstep.go`) use unqualified,
+    namespace-less `encoding/xml` tags, which match a local element name
+    regardless of its namespace URI — chosen because there's no live server
+    to confirm exactly which namespace a given ADCS/IIS/WCF version
+    actually uses, and Microsoft's own published examples aren't fully
+    consistent about it either. The issued certificate arrives as a
+    `BinarySecurityToken` wrapping a base64 "degenerate" PKCS#7 (certs
+    only, no signature) — decoded via `go.mozilla.org/pkcs7`, the one new
+    dependency this integration adds (no PKCS#7 support exists in Go's
+    standard library, and hand-rolling ASN.1 parsing for it would be pure
+    reinvention). **Ordering the returned certificates is correctness, not
+    formatting**: a degenerate PKCS#7's certificate list is an unordered
+    ASN.1 SET, so nothing guarantees the issued leaf is `Certificates[0]`
+    the way it would be for a normally signed PKCS#7 —
+    `orderCertificatesFromCSR` identifies the leaf by matching each
+    returned certificate's public key against the original CSR's, not by
+    assuming an order.
+  - **`domain.Certificate` gained two fields**: `SignedByADCS bool` (the
+    trust-class-affecting marker — `TrustClass()` now treats it the same
+    as `SelfSigned`/`SignedByRootCAID != nil`: internal, since it's the
+    org's own CA, not a publicly-trusted one) and `ADCSRequestID string`
+    (purely informational — the request/serial ID ADCS's response reported,
+    for looking the request up on the CA server later; may be empty even
+    when `SignedByADCS` is true if the response didn't carry one). Unlike
+    `SignedByRootCAID *uuid.UUID`, this is a plain bool rather than a
+    foreign key — there's no in-app CA record to point at, ADCS's own CA
+    lives entirely outside this app (migration `0015_adcs_integration.sql`).
+  - **Config follows the DigiCert integration's exact "empty = off"
+    pattern**: `ADCS_ENDPOINT` unset disables the whole integration (the
+    "Submit to ADCS" option simply doesn't render); once set,
+    `ADCS_USERNAME`/`ADCS_PASSWORD`/`ADCS_TEMPLATE` are all required, same
+    fail-fast-at-boot cross-field check `DIGICERT_BASE_URL` gets.
+    `ADCS_PASSWORD` is Docker-secrets-eligible via `ADCS_PASSWORD_FILE`,
+    same convention as `SMTP_PASSWORD`/`TEAMS_WEBHOOK_URL`/
+    `LDAP_BIND_PASSWORD`. Deliberately **env-only, not portal-editable** —
+    matching DigiCert's own config, not the v1.5/v1.8 pattern LDAP/SMTP/
+    Teams moved to; nothing about this decision is ADCS-specific, it's just
+    staying consistent with how the other outside-CA integration is
+    already configured.
+  - **Verification status, stated plainly — same caveat
+    `internal/pkg/digicert` already carries, and for the same reason**:
+    there is no real ADCS server available to test against in this
+    environment (it's a Windows Server role requiring AD infrastructure,
+    not something installable in a quick local sandbox the way `slapd` was
+    for the LDAP integration's live tests). What *is* verified: `go build`/
+    `vet`/`test ./...` all pass; `internal/pkg/adcs`'s own tests exercise
+    the full request→response round trip against a real `httptest.Server`
+    — the server itself decodes the sent SOAP/WS-Security XML and asserts
+    the username, template, and CSR bytes all arrived correctly, then
+    returns a real, correctly-shaped RSTR response (built with a real
+    `go.mozilla.org/pkcs7`-encoded degenerate certificate, not a stub) for
+    the client to parse back into an `EnrollResult` — proving the request
+    is well-formed SOAP+WS-Security and the response parser round-trips a
+    correctly-shaped real response, not that a real ADCS server will
+    accept or answer it identically. SOAP fault handling, a pending-
+    disposition rejection, and the leaf-reordering-by-public-key logic all
+    have dedicated tests too. `CertificateService.SignWithADCS` is tested
+    against a fake `adcs.Client` (mirroring `fakeDigiCertClient`), covering
+    `TrustClass()`/`SignedByADCS`/`ADCSRequestID` end to end at the service
+    layer. **Before pointing this at production**, get access to a real
+    ADCS test server and CES endpoint configured for username/password
+    auth, then run through this checklist: (1) set `ADCS_ENDPOINT`/
+    `ADCS_USERNAME`/`ADCS_PASSWORD`/`ADCS_TEMPLATE` and confirm the server
+    logs "ADCS integration enabled" at boot; (2) generate a pending CSR in
+    the vault, open its detail page, pick "Submit to ADCS" from the "Sign
+    with" dropdown, and confirm a certificate actually comes back — if it
+    errors here, the SOAP envelope shape in `buildRequestEnvelope` or the
+    endpoint/auth configuration is what to check first (the error message
+    will include ADCS's own SOAP Fault reason when there is one, e.g.
+    "Access is denied." for a bad username/password or missing Enroll
+    permission on the template); (3) confirm with `openssl x509 -in ... -
+    noout -issuer -subject -dates` that the issued certificate's issuer is
+    really the ADCS CA and its validity matches the template's configured
+    policy, not the "Valid for" days field (which this path ignores); (4)
+    confirm `TrustClass()` reads as Internal on the certificate list/detail
+    page; (5) if the template involved has a chain (an issuing CA under a
+    root), confirm the chain came back correctly ordered — download the
+    full chain and verify it with `openssl verify -CAfile <root>
+    -untrusted <intermediate> <leaf>`; (6) try a template that requires
+    manual approval and confirm the pending-disposition case surfaces a
+    clear error rather than silently doing nothing.
+
+- **v1.15: seven fixes reported directly by the user after using the app**,
+  handled together in one pass, technical docs updated as the last step per
+  the user's own instruction.
+  1. **The users admin page's role `<select>` was missing `name="role"`.**
+     `templates/partials/user_table.html`'s per-row role dropdown
+     (`hx-post="/users/{id}/role"`) had every other htmx attribute but no
+     `name` attribute at all — htmx has nothing to serialize without one, so
+     every role change silently posted an empty body and
+     `handleUserRoleUpdate`'s `r.PostFormValue("role")` read `""`. One
+     missing attribute; the "create new user" form's own role select right
+     above it on the same page was fine, which is presumably why this went
+     unnoticed for a while. Fixed by adding `name="role"`.
+  2. **Local `.env` vs. server `/run/secrets/<name>` — three integrations
+     (DigiCert, LDAP, and the brand-new ADCS from v1.14) were never wired
+     into either Docker deployment path at all**, only reachable via
+     `make run`/`go run` (which loads `.env` directly into the process via
+     `loadDotEnv`, bypassing Docker's environment layer entirely).
+     `docker-compose.yml`'s `environment:` block only passes through
+     variables it explicitly lists — a var missing from that list never
+     reaches the container regardless of what `.env` says — and
+     `DIGICERT_API_KEY`/`DIGICERT_BASE_URL`/every `LDAP_*` var/every
+     `ADCS_*` var (plus `RENEWAL_SWEEP_INTERVAL`) were all simply absent
+     from it. Fixed by adding all of them (mirroring the existing
+     `${VAR:-default}` convention). `docker-stack.yml` (the Swarm/production
+     path) had the same gap for the non-secret half of each, and additionally
+     never created `ssl_tower_ldap_bind_password`/`ssl_tower_adcs_password`
+     Docker secrets at all even though both `LDAP_BIND_PASSWORD` and
+     `ADCS_PASSWORD` were already in `config.go`'s `secretFileKeys` — fixed
+     by adding the plain vars, the two `*_FILE` secret references, the two
+     `secrets:` entries, and the matching `make docker-secrets` handling
+     (same "skip and print a note if empty in `.env`" pattern already used
+     for `SMTP_PASSWORD`/`TEAMS_WEBHOOK_URL`). `DIGICERT_API_KEY` itself
+     stays a plain (non-secret) var in both files — not something this pass
+     changed, just consistent with `config.go`'s own pre-existing
+     `secretFileKeys` list not including it.
+  3. **Two `Makefile`s.** `Makefile.txt` was a stale, git-tracked duplicate
+     of `Makefile` — a byproduct of the `device_commit_files` sync gotcha
+     already documented under "Known environment gotchas" below (it refuses
+     to write a file literally named `Makefile`, so a sync produces
+     `Makefile.txt` instead, and at some point that got committed alongside
+     the real file rather than renamed over it). `Makefile` was confirmed as
+     the actually-current, actually-used one (identical content plus this
+     session's own edits); `Makefile.txt` was `git rm`'d. The gotcha note
+     itself still stands — this was cleaning up one specific instance of it
+     landing in the repo, not a change to the sync tool's behavior.
+  4. **The font stack's "Inter" fallback read as generic AI/SaaS-template
+     styling.** `tailwind.config.js`'s `fontFamily.sans` used to fall back
+     through `Segoe UI` to `Inter` before hitting a bare `sans-serif` — the
+     same default nearly every AI-scaffolded project ships with. Asked the
+     user directly rather than guessing how far to take it (self-host a
+     specific typeface vs. go fully system-native — the CSP's `default-src
+     'self'` already blocks any external font CDN, so a Google-Fonts-style
+     fix wasn't on the table either way); the user chose fully system-native.
+     `Inter`/`ui-sans-serif` dropped entirely, `system-ui` alone leads the
+     stack — it already resolves to each platform's real UI font (Segoe UI
+     Variable, San Francisco, Roboto) with zero new assets and zero CSP
+     change needed. Rebuilt `static/app.css` via the standalone Tailwind
+     v3.4.17 binary (the Makefile's own downloader only has Darwin/Linux
+     branches — fetched the Windows one directly for this dev machine).
+  5. **An uploaded/generated Root CA had no detail view at all** — the
+     Issuers page's list only ever showed name, common name, and key
+     algorithm/size, with no way to see the full subject, fingerprint,
+     validity dates, or the certificate PEM itself, even though
+     `domain.RootCA` already stores all of it. Fixed with an inline
+     `<details>`/`<summary>` expansion per row (`root_ca_section.html`),
+     reusing the existing `fact`/`pem-block` partials the certificate detail
+     page already uses — no new route or handler needed, since every field
+     was already loaded into `.RootCAs`. The Delete button was deliberately
+     moved to sit *outside* the `<details>` (as a sibling, not nested inside
+     the `<summary>`) so clicking it doesn't also toggle the expansion open/
+     closed via event bubbling.
+  6. **Bulk-renewing internal certificates removed entirely**, per explicit
+     request — not disabled, deleted: `CertificateService.BulkRenewInternal`/
+     `BulkRenewInput`/`BulkRenewOutcome`, `handleCertificateBulkRenew`,
+     the `POST /certificates/bulk-renew` route, the per-row selection
+     checkboxes and the renew-selected bar in `certificate_table.html`
+     (which changed from a `<form>` to a plain `<div>` — `id=
+     "certificate-table"` still has to exist and still gets replaced
+     wholesale via `outerHTML` by every other action on the page: generate,
+     import, import-CSR, import-PFX, delete), the now-orphaned
+     `AuditCertificateRenewed` action, and the dedicated test
+     (`TestBulkRenewInternalMixedBatch`). A renewal ticket's own
+     `ApproveInternal` (v1.2, unaffected) remains the only internal-renewal
+     path; several doc comments elsewhere (`AutoDraftRenewals`,
+     `DigiCertService.Submit`, a couple of interface doc comments) referenced
+     the removed method by name purely for scoping rationale and were
+     reworded rather than left dangling.
+  7. **Outgoing email is now a simple branded HTML template, sent
+     multipart/alternative alongside the original plain text** — not a
+     redesign of the notification content itself, just how it's presented.
+     New `internal/pkg/notify/template.go`: `renderHTMLBody(subject, body)`
+     splits the plain-text body on blank lines into `<p>` paragraphs and
+     wraps them in `htmlEmailTemplate`, a single-card, table-based layout
+     (table-based specifically because that's the one layout model
+     consistently honoured across real-world email clients, unlike flexbox/
+     grid) with inline styles only — no external CSS/fonts/images, matching
+     this app's own "nothing from third-party origins" CSP posture even
+     though email delivery has no CSP of its own to enforce it. Every
+     dynamic value (subject and body both, since either can carry a
+     certificate common name or other data tracing back to a requester) is
+     HTML-escaped via `html.EscapeString` before insertion — this content is
+     rendered by the *recipient's* mail client, so escaping has to happen
+     here, there's nothing downstream to fall back on. `buildMIME` (used by
+     the fixed alert-recipient `Send`) and `buildMultipartMIME` (used by
+     `SendWithAttachment`, the ticket-certificate-delivery path) both now
+     build their body via a new shared `buildAlternativeBody` helper — a
+     nested `multipart/alternative` part (text then html) that
+     `buildMultipartMIME` places as the first part of its outer
+     `multipart/mixed`, ahead of any attachments, so the two code paths
+     share one HTML-rendering implementation rather than duplicating it.
+     `buildMIME` changed signature to return an error (multipart-writer
+     construction can, in principle, fail) — its one caller (`Send`) updated
+     to match. Existing tests updated for the new nested structure
+     (`TestBuildMultipartMIME` now descends into the alternative part before
+     reaching the attachment parts) and a new test
+     (`TestRenderHTMLBodySplitsParagraphsAndEscapes`) confirms both the
+     paragraph splitting and the HTML-escaping directly. A CodeQL rescan
+     after this surfaced a third instance of the same "the query's dataflow
+     summary conflates unrelated `Write([]byte)` implementations" tool
+     limitation already documented in the CodeQL section below
+     (`go/reflected-xss` on an HTTP middleware helper that has no actual
+     call relationship with the `notify` package at all) — confirmed by
+     checking imports directly, not assumed.
+  - **Verification**: `go build`/`vet`/`test ./...` all pass, including new/
+    updated tests for items 1 (n/a — pure template fix, verified by reading
+    the resulting HTML) and 7 above. A CodeQL rescan after all seven fixes
+    shows the same set of already-reviewed findings from v1.13/v1.14 plus
+    the one new, confirmed-false-positive `go/reflected-xss` case documented
+    below — nothing else new. **Live browser verification was not performed
+    this session** (no running Postgres instance available) — the role-
+    update fix (item 1) and the Root CA detail expansion (item 4) are purely
+    template/markup changes that should be clicked through by hand before
+    relying on this in production, same caveat as v1.13/v1.14's own
+    unverified-live sections.
+
+- **v1.16: ADCS configuration moved from `.env`-only to portal-editable**,
+  the exact same move v1.8 made for LDAP (see that section above for the
+  general shape) — `ADCS_ENDPOINT`/`ADCS_USERNAME`/`ADCS_PASSWORD`/
+  `ADCS_TEMPLATE` are now only a first-boot seed (`SettingsService.Bootstrap`
+  seeds each from `.env` only if no row exists yet; from then on `/settings`
+  and the database govern the live value). This does not change any part
+  of the v1.14 CES/CEP model itself — only *where the configuration lives
+  and how live it is* changes. The boot-time cross-field check config.go
+  used to enforce (`ADCS_USERNAME`/`PASSWORD`/`TEMPLATE` required once
+  `ADCS_ENDPOINT` is set) moved to `SettingsService.Update`'s new
+  `validateADCSPatch`, mirroring `validateLDAPPatch` exactly — a bad *seed*
+  should never block boot, only a bad *live edit* should be rejected.
+  `CertificateService` no longer holds a static `adcs.Client` wired once at
+  boot (`SetADCSClient` is gone) — it now holds an `adcsClientFactory func
+  (adcs.Config) adcs.Client` (`SetADCSClientFactory`, test-injection only,
+  mirroring `AuthOptions.LDAPClientFactory`'s role for LDAP) and
+  `SignWithADCS` builds a fresh client from `settings.Current()` on every
+  call, the same "always current" pattern `SettingsService.EmailNotifier`/
+  `TeamsNotifier` already established — an admin's portal edit takes effect
+  on the very next "Submit to ADCS" click, no restart needed.
+  `ADCSPassword` is a write-only field in the `/settings` UI (never
+  pre-filled with the real stored value; blank keeps what's stored; an
+  explicit "Clear the stored password" checkbox is the only way to wipe
+  it), the same convention `SMTPPassword`/`TeamsWebhookURL`/
+  `LDAPBindPassword` already use. Covered by new tests mirroring the
+  existing LDAP ones exactly: `TestUpdateAcceptsValidADCSConfig`,
+  `TestUpdateRejectsADCSMissingRequiredField`,
+  `TestUpdateWithoutADCSEndpointIgnoresOtherADCSFields` (settings-service
+  layer), plus the existing `SignWithADCS` tests updated to configure ADCS
+  via a settings snapshot and inject a fake client through
+  `SetADCSClientFactory` instead of the now-removed `SetADCSClient`.
+  `go build`/`vet`/`test ./...` all pass. **Live browser verification of
+  the new `/settings` ADCS section was not performed this session** (no
+  running Postgres instance available) — click through a save (endpoint +
+  username + password + template, then a blank-password re-save to confirm
+  the stored password survives) before relying on this in production, same
+  caveat as this file's other unverified-live sections.
+
+- **v1.17: primary accent recolored from blue to a brand red, scoped
+  deliberately narrowly** — a new `brand` color (`tailwind.config.js`,
+  shades `400`/`500`) replaces every literal `sky-500`/`sky-400` Tailwind
+  utility that was acting as the primary-action/focus-ring/checkbox-radio
+  accent: `.btn-primary`'s button face (`web/input.css`), every
+  `focus:ring-*` on a text input/textarea, every checkbox/radio's
+  `text-*`/`focus:ring-*` accent color, the `.chip-toggle-label`'s keyboard-
+  focus ring, and the page-wide text-selection highlight color
+  (`layout.html`'s `selection:bg-*`). `brand-500` is a fixed literal hex
+  (`#E4002B`, a best-known approximation of OCBC's brand red — confirmed
+  with the user directly that an approximation was acceptable rather than
+  an exact brand-guideline hex; adjust the two hex values in
+  `tailwind.config.js` if a precise one is supplied later), not
+  theme-variable-backed — matching how the `sky-500`/`sky-400` it replaced
+  was never theme-toggled either.
+  - **Deliberately left blue, confirmed with the user rather than assumed**:
+    the semantic `hue-sky`/`hue-sky-strong` tokens (links, "Internal"
+    trust-class badges, the LDAP-account badge, the light/dark-aware nav
+    active-state highlight, informational panels like "Already on file"
+    duplicate-fingerprint notices and the login page's `.Notice` banner,
+    and the certificates page's intake-method tab selection state) are
+    untouched — these are a different semantic meaning (informational/
+    selected, not primary-action) from what was asked to change. This
+    mattered in practice: several literal `sky-500`/`sky-400` occurrences
+    sit on the *same element* as a `text-hue-sky` class (e.g. the
+    certificates page's selected intake tab, the EKU chip picker's
+    `peer-checked:` state, the "Internal" badge's background+ring framing
+    its own `hue-sky` text) — converting only the ones with no `hue-sky`
+    companion on the same line, rather than every literal `sky-500`/
+    `sky-400` string in the codebase, is what kept those coherent instead
+    of producing a badge with a red ring around blue text.
+  - **Deliberately kept distinct from `hue-rose`** (the existing danger/
+    critical/destructive color — Reject, Delete, critical-expiry status):
+    confirmed with the user that the new brand red and the existing danger
+    red should read as different signals, not the same one.
+    `hue-rose`/`hue-rose-strong` are untouched; `brand-500`'s hex is a
+    purer, more orange-leaning red than `rose-500`'s pink-leaning one
+    (`#f43f5e`), so a primary "Generate"/"Save" button and a "Delete"
+    button don't visually blend into the same warning-color family.
+  - Rebuilt `static/app.css` via the standalone Tailwind v3.4.17 binary
+    (same Windows-binary-fetched-directly workaround the v1.15 font change
+    needed, since the Makefile's own downloader has no Windows branch).
+    Verified the compiled output directly rather than assuming the source
+    edit took effect: `.btn-primary`'s and `:hover`'s `background-color`
+    resolve to `rgb(228 0 43)`/`rgb(235 64 96)` (the two brand hexes in
+    decimal), and every `hue-sky`-paired occurrence found in a final
+    repo-wide sweep was confirmed to still carry its original `sky-500`/
+    `sky-400` value, untouched.
+  - `go build`/`vet`/`test ./...` all pass (this is a CSS/template-only
+    change with no Go logic touched). **Live browser verification was not
+    performed this session** (no running Postgres instance available) —
+    click through the app in both themes before relying on this in
+    production, particularly to confirm the "Internal" badges/tab-selection
+    states still read clearly as blue/informational next to the new red
+    primary buttons.
+
 ## CodeQL
 
 A local CodeQL setup exists for cheap, targeted static analysis — running a
@@ -1236,6 +1591,22 @@ analyze` CLI used here, so it's inert for this local workflow today (it
 would take effect automatically if this repo is ever wired into GitHub Code
 Scanning) — the comments are left in purely as human-readable justification
 at the flagged line.
+
+**A third case of the same tool-limitation class, added when the v1.15
+email-template work (see below) started tripping it**: `go/reflected-xss`
+on `statusRecorder.Write` in `middleware.go` — a generic byte-count-tracking
+`http.ResponseWriter` wrapper used by every response in the app. The
+reported path runs from `internal/pkg/notify/email.go`'s new HTML-email
+template builder through this `Write` call, which would be a real finding
+if it were a real call chain — it isn't: `middleware.go` imports nothing
+from this project at all (confirmed directly, not just plausible), and no
+`internal/delivery/http` file imports `internal/pkg/notify`. The query's
+dataflow summary conflates every `Write([]byte) (int, error)`-shaped
+function as interchangeable (`bytes.Buffer.Write`, an SMTP `net.Conn`'s
+`Write`, and `http.ResponseWriter.Write` all match that same shape), so a
+value that only ever reaches an SMTP socket gets reported as reaching an
+HTTP response too. Same `// codeql[go/reflected-xss]` comment convention as
+the other two, same caveat about it being inert for the local CLI.
 
 ## Conventions
 

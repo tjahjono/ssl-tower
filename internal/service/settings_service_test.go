@@ -315,6 +315,71 @@ func TestSettingsReloadSplitsLDAPRoleMapsOnSemicolonNotComma(t *testing.T) {
 	}
 }
 
+// validADCSPatch mirrors validLDAPPatch's role for ADCS's own cross-field
+// check (v1.16).
+func validADCSPatch() domain.AppSettings {
+	return domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3,
+		ADCSEndpoint: "https://adcs.example.com/ADPolicyProvider_CEP_UsernamePassword/service.svc/CES",
+		ADCSUsername: "svc-adcs", ADCSPassword: "svcpass", ADCSTemplate: "WebServer",
+	}
+}
+
+func TestUpdateAcceptsValidADCSConfig(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	if err := svc.Update(context.Background(), validADCSPatch(), "admin@example.com"); err != nil {
+		t.Fatalf("Update: unexpected error with a fully valid ADCS config: %v", err)
+	}
+	cur := svc.Current()
+	if cur.ADCSTemplate != "WebServer" {
+		t.Fatalf("ADCSTemplate = %q, want the saved value", cur.ADCSTemplate)
+	}
+}
+
+func TestUpdateRejectsADCSMissingRequiredField(t *testing.T) {
+	fields := map[string]func(*domain.AppSettings){
+		"ADCSUsername": func(p *domain.AppSettings) { p.ADCSUsername = "" },
+		"ADCSPassword": func(p *domain.AppSettings) { p.ADCSPassword = "" },
+		"ADCSTemplate": func(p *domain.AppSettings) { p.ADCSTemplate = "" },
+	}
+	for name, clear := range fields {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeSettingsRepository()
+			svc := NewSettingsService(repo, discardLogger())
+			if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+				t.Fatalf("Bootstrap: %v", err)
+			}
+			patch := validADCSPatch()
+			clear(&patch)
+
+			err := svc.Update(context.Background(), patch, "admin@example.com")
+			if _, ok := domain.AsValidation(err); !ok {
+				t.Fatalf("Update: expected a ValidationError with %s cleared while ADCSEndpoint is set, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestUpdateWithoutADCSEndpointIgnoresOtherADCSFields(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// ADCSEndpoint left empty — the "empty = off" toggle — even though
+	// nothing else ADCS-related is set either.
+	patch := domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3}
+	if err := svc.Update(context.Background(), patch, "admin@example.com"); err != nil {
+		t.Fatalf("Update: expected no error with ADCSEndpoint empty, got %v", err)
+	}
+}
+
 func TestUpdateTakesEffectImmediatelyOnCurrent(t *testing.T) {
 	repo := newFakeSettingsRepository()
 	svc := NewSettingsService(repo, discardLogger())

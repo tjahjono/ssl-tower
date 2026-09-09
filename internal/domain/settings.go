@@ -42,6 +42,16 @@ const (
 	SettingLDAPRoleMapViewer    = "ldap_role_map_viewer"
 	SettingLDAPRoleMapRequester = "ldap_role_map_requester"
 
+	// ADCS settings (v1.16) — portal-editable, same "empty endpoint = off"
+	// convention LDAP/SMTP/Teams already follow. See CLAUDE.md's v1.16
+	// locked decision; AppSettings' own field doc comments below cover the
+	// individual fields' semantics (carried over unchanged from the old
+	// env-only config.Config fields of the same names, v1.14).
+	SettingADCSEndpoint = "adcs_endpoint"
+	SettingADCSUsername = "adcs_username"
+	SettingADCSPassword = "adcs_password"
+	SettingADCSTemplate = "adcs_template"
+
 	// SettingEncryptionKey is persisted in this same table — there is
 	// nowhere else durable to put it once it's portal-editable — but it is
 	// deliberately NOT part of AppSettings/SettingsService's generic
@@ -97,6 +107,17 @@ type AppSettings struct {
 	LDAPRoleMapEditor    []string
 	LDAPRoleMapViewer    []string
 	LDAPRoleMapRequester []string
+
+	// ADCS CES/CEP integration (v1.16, portal-editable — env-only as of
+	// v1.14). ADCSEndpoint is the "empty = off" toggle: empty means the
+	// pending-certificate detail page's "Sign with" dropdown simply doesn't
+	// offer "Submit to ADCS". Once set, ADCSUsername/ADCSPassword/
+	// ADCSTemplate become required — enforced by SettingsService.Update,
+	// not here. See CLAUDE.md's ADCS locked decisions for the full model.
+	ADCSEndpoint string
+	ADCSUsername string
+	ADCSPassword string
+	ADCSTemplate string
 }
 
 // SettingsRepository is the persistence port for admin-editable operational

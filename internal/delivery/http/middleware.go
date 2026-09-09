@@ -22,6 +22,14 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
+	// This flags as go/reflected-xss because the query's dataflow summary
+	// conflates every Write([]byte) (int, error)-shaped function as the
+	// same sink — b here is only ever whatever the real handler already
+	// wrote (rendered through html/template, which auto-escapes); this
+	// package has no import relationship with internal/pkg/notify at all
+	// (confirmed directly), so the reported path through email.go's HTML
+	// template builder is not a real call chain.
+	// codeql[go/reflected-xss]
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += n
 	return n, err

@@ -118,7 +118,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /certificates/import", s.requireWrite(s.handleCertificateImport))
 	s.mux.HandleFunc("POST /certificates/import-csr", s.requireWrite(s.handleCertificateImportCSR))
 	s.mux.HandleFunc("POST /certificates/import-pfx", s.requireWrite(s.handleCertificateImportPFX))
-	s.mux.HandleFunc("POST /certificates/bulk-renew", s.requireWrite(s.handleCertificateBulkRenew))
 	s.mux.HandleFunc("GET /certificates/{id}", s.requireAuth(s.handleCertificateDetail))
 	s.mux.HandleFunc("DELETE /certificates/{id}", s.requireWrite(s.handleCertificateDelete))
 	s.mux.HandleFunc("POST /certificates/{id}/certificate", s.requireWrite(s.handleCertificateAttach))

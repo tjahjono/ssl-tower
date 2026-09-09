@@ -145,6 +145,18 @@ docker-secrets: ## Create every Docker secret docker-stack.yml needs, sourced fr
 		create_if_missing ssl_tower_teams_webhook "$$TEAMS_URL"; \
 	else \
 		echo "TEAMS_WEBHOOK_URL is empty in .env — skipping ssl_tower_teams_webhook (leave it commented out in docker-stack.yml too, or Teams alerts stay off)"; \
+	fi; \
+	LDAP_PW=$$(env_val LDAP_BIND_PASSWORD); \
+	if [ -n "$$LDAP_PW" ]; then \
+		create_if_missing ssl_tower_ldap_bind_password "$$LDAP_PW"; \
+	else \
+		echo "LDAP_BIND_PASSWORD is empty in .env — skipping ssl_tower_ldap_bind_password (leave it commented out in docker-stack.yml too; LDAP can still be configured later from /settings)"; \
+	fi; \
+	ADCS_PW=$$(env_val ADCS_PASSWORD); \
+	if [ -n "$$ADCS_PW" ]; then \
+		create_if_missing ssl_tower_adcs_password "$$ADCS_PW"; \
+	else \
+		echo "ADCS_PASSWORD is empty in .env — skipping ssl_tower_adcs_password (leave it commented out in docker-stack.yml too, or the ADCS integration stays off)"; \
 	fi
 	@echo "Re-run 'docker secret inspect <name>' any time to check what exists — a secret already created is left untouched, since Docker secrets are immutable. To pick up a changed .env value, create a new secret under a new name and update docker-stack.yml's reference to it (see that file's header comment)."
 

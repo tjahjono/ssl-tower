@@ -112,7 +112,7 @@
   }
   .field-input {
     @apply rounded-lg border-0 bg-surface/60 text-ink-2 ring-1 ring-inset ring-line/10
-      placeholder:text-ink-6 focus:outline-none focus:ring-2 focus:ring-sky-500;
+      placeholder:text-ink-6 focus:outline-none focus:ring-2 focus:ring-brand-500;
   }
   /* Same field, one shade lighter — for a filter bar or toolbar that sits
      directly on the page background rather than inside a card, where
@@ -147,11 +147,14 @@
   /* Buttons carry only color, weight, and transition here — radius, padding,
      and text size still vary by call site (a table-row action button is
      smaller than a form's submit button). btn-primary's text stays a fixed
-     near-black regardless of theme — it's set against a solid sky-500
+     near-black regardless of theme — it's set against a solid brand-500
      button face either way, not the page background, so it never needs to
-     flip. */
+     flip. brand-500 is a fixed literal color (not theme-variable-backed,
+     same as the sky-500 it replaced) — the primary accent, deliberately a
+     different hue from hue-rose (danger/critical/destructive) so a primary
+     action and a destructive one never read as the same signal. */
   .btn-primary {
-    @apply rounded-lg bg-sky-500 font-semibold text-slate-950 transition hover:bg-sky-400;
+    @apply rounded-lg bg-brand-500 font-semibold text-slate-950 transition hover:bg-brand-400;
   }
   .btn-secondary {
     @apply rounded-lg bg-line/5 font-medium text-ink-2 ring-1 ring-inset ring-line/10 transition hover:bg-line/10;
@@ -181,6 +184,6 @@
       font-medium ring-1 ring-inset transition
       bg-line/[0.02] text-ink-4 ring-line/10 hover:bg-line/5 hover:text-ink-3
       peer-checked:bg-sky-500/10 peer-checked:text-hue-sky peer-checked:ring-sky-500/30
-      peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500;
+      peer-focus-visible:ring-2 peer-focus-visible:ring-brand-500;
   }
 }

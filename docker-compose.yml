@@ -63,6 +63,28 @@ services:
       # SLA window (days since approval) before an open certificate request
       # ticket is flagged overdue on the ticket queue.
       TICKET_SLA_DAYS: "${TICKET_SLA_DAYS:-3}"
+      # Auto-drafting renewal tickets is opt-in — empty leaves the app purely
+      # reactive.
+      RENEWAL_SWEEP_INTERVAL: "${RENEWAL_SWEEP_INTERVAL:-}"
+      # DigiCert renewal integration — empty API key disables it entirely.
+      DIGICERT_API_KEY: "${DIGICERT_API_KEY:-}"
+      DIGICERT_BASE_URL: "${DIGICERT_BASE_URL:-https://www.digicert.com/services/v2}"
+      # ADCS CES/CEP integration — empty endpoint disables it entirely.
+      ADCS_ENDPOINT: "${ADCS_ENDPOINT:-}"
+      ADCS_USERNAME: "${ADCS_USERNAME:-}"
+      ADCS_PASSWORD: "${ADCS_PASSWORD:-}"
+      ADCS_TEMPLATE: "${ADCS_TEMPLATE:-}"
+      # LDAP authentication — only a first-boot seed (v1.8: portal-editable
+      # from /settings from then on). Empty URL disables it entirely.
+      LDAP_URL: "${LDAP_URL:-}"
+      LDAP_BIND_DN: "${LDAP_BIND_DN:-}"
+      LDAP_BIND_PASSWORD: "${LDAP_BIND_PASSWORD:-}"
+      LDAP_BASE_DN: "${LDAP_BASE_DN:-}"
+      LDAP_USER_FILTER: "${LDAP_USER_FILTER:-}"
+      LDAP_GROUP_FILTER: "${LDAP_GROUP_FILTER:-}"
+      LDAP_ROLE_MAP_EDITOR: "${LDAP_ROLE_MAP_EDITOR:-}"
+      LDAP_ROLE_MAP_VIEWER: "${LDAP_ROLE_MAP_VIEWER:-}"
+      LDAP_ROLE_MAP_REQUESTER: "${LDAP_ROLE_MAP_REQUESTER:-}"
     ports:
       - "3000:3000"
 

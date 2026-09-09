@@ -80,7 +80,7 @@
                  placeholder="{{if hasValue .Settings.SMTPPassword}}•••• leave blank to keep current{{else}}not set{{end}}"
                  class="field-input w-full px-3 py-2 text-sm">
           <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
-            <input type="checkbox" name="smtp_password_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+            <input type="checkbox" name="smtp_password_clear" class="rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
             Clear the stored password
           </label>
         </div>
@@ -109,7 +109,7 @@
                placeholder="{{if hasValue .Settings.TeamsWebhookURL}}•••• leave blank to keep current{{else}}not set{{end}}"
                class="field-input w-full px-3 py-2 text-sm">
         <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
-          <input type="checkbox" name="teams_webhook_url_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+          <input type="checkbox" name="teams_webhook_url_clear" class="rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
           Clear the stored webhook URL
         </label>
       </div>
@@ -154,7 +154,7 @@
                  placeholder="{{if hasValue .Settings.LDAPBindPassword}}•••• leave blank to keep current{{else}}not set{{end}}"
                  class="field-input w-full px-3 py-2 text-sm">
           <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
-            <input type="checkbox" name="ldap_bind_password_clear" class="rounded border-line/20 bg-surface text-sky-500 focus:ring-sky-500">
+            <input type="checkbox" name="ldap_bind_password_clear" class="rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
             Clear the stored password
           </label>
         </div>
@@ -204,6 +204,53 @@
         the first matching group wins. At least one of the three lists must be filled in once the URL
         is set, or every LDAP login would be denied. There is no admin group mapping: admin is always
         a local account, never LDAP-derived.
+      </p>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">ADCS (Active Directory Certificate Services)</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          Leave the endpoint empty to disable the integration entirely — the pending-certificate
+          detail page's "Sign with" dropdown simply won't offer "Submit to ADCS". A saved change
+          here takes effect on the very next submission, no restart needed.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="sm:col-span-2">
+          <label for="adcs_endpoint" class="field-label mb-1 block">CES endpoint URL</label>
+          <input id="adcs_endpoint" name="adcs_endpoint" type="text" autocomplete="off"
+                 placeholder="https://adcs.example.com/ADPolicyProvider_CEP_UsernamePassword/service.svc/CES"
+                 value="{{.Settings.ADCSEndpoint}}" class="field-input w-full px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-ink-6">The full CES URL configured for username/password authentication — from ADCS's own admin console, not a bare hostname.</p>
+        </div>
+        <div>
+          <label for="adcs_username" class="field-label mb-1 block">Username</label>
+          <input id="adcs_username" name="adcs_username" type="text" autocomplete="off"
+                 placeholder="svc-adcs"
+                 value="{{.Settings.ADCSUsername}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="adcs_password" class="field-label mb-1 block">Password</label>
+          <input id="adcs_password" name="adcs_password" type="password" autocomplete="new-password"
+                 placeholder="{{if hasValue .Settings.ADCSPassword}}•••• leave blank to keep current{{else}}not set{{end}}"
+                 class="field-input w-full px-3 py-2 text-sm">
+          <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
+            <input type="checkbox" name="adcs_password_clear" class="rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
+            Clear the stored password
+          </label>
+        </div>
+        <div class="sm:col-span-2">
+          <label for="adcs_template" class="field-label mb-1 block">Certificate template</label>
+          <input id="adcs_template" name="adcs_template" type="text" autocomplete="off"
+                 placeholder="WebServer"
+                 value="{{.Settings.ADCSTemplate}}" class="field-input w-full px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-ink-6">The template's short/internal name, not its display name — the account above needs Enroll permission on it.</p>
+        </div>
+      </div>
+      <p class="text-xs text-ink-6">
+        Username/password authentication only — the account needs Enroll permission on the named
+        template. All three fields are required once the endpoint is set.
       </p>
     </section>
 

@@ -178,12 +178,17 @@
                   <option value="self">Its own key (self-signed)</option>
                   {{range .RootCAs}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
                   <option value="new">+ Create a new Root CA&hellip;</option>
+                  {{if .ADCSEnabled}}<option value="adcs">Submit to ADCS</option>{{end}}
                 </select>
                 <label for="issue-days" class="text-xs text-ink-5">Valid for</label>
                 <input id="issue-days" name="days" type="number" min="1" max="3650" value="365"
                        class="field-input w-24 px-3 py-1.5 text-sm">
                 <span class="text-xs text-ink-5">days</span>
               </div>
+              <p data-show-when="sign_action:adcs" class="hidden text-xs text-ink-6">
+                ADCS's own certificate template dictates the issued certificate's validity — the
+                "Valid for" days above are ignored for this option.
+              </p>
 
               <div data-show-when="sign_action:new" class="hidden space-y-4 rounded-lg border border-line/5 bg-line/[0.02] p-4">
                 <p class="text-xs text-ink-6">

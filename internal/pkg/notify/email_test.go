@@ -42,13 +42,29 @@ func TestBuildMultipartMIME(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse Content-Type: %v", err)
 	}
-	if !strings.HasPrefix(mediaType, "multipart/") {
-		t.Fatalf("Content-Type = %q, want multipart/*", mediaType)
+	if mediaType != "multipart/mixed" {
+		t.Fatalf("Content-Type = %q, want multipart/mixed", mediaType)
 	}
 
 	mr := multipart.NewReader(msg.Body, params["boundary"])
 
-	textPart, err := mr.NextPart()
+	// The first part of the outer multipart/mixed is itself a
+	// multipart/alternative (text + simple HTML renderings of the same
+	// body) — see buildAlternativeBody — not a bare text/plain part.
+	altPart, err := mr.NextPart()
+	if err != nil {
+		t.Fatalf("read alternative part: %v", err)
+	}
+	altMediaType, altParams, err := mime.ParseMediaType(altPart.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("parse alternative part Content-Type: %v", err)
+	}
+	if altMediaType != "multipart/alternative" {
+		t.Fatalf("first part Content-Type = %q, want multipart/alternative", altMediaType)
+	}
+	altReader := multipart.NewReader(altPart, altParams["boundary"])
+
+	textPart, err := altReader.NextPart()
 	if err != nil {
 		t.Fatalf("read text part: %v", err)
 	}
@@ -61,6 +77,27 @@ func TestBuildMultipartMIME(t *testing.T) {
 	}
 	if ct := textPart.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
 		t.Fatalf("text part Content-Type = %q, want text/plain", ct)
+	}
+
+	htmlPart, err := altReader.NextPart()
+	if err != nil {
+		t.Fatalf("read html part: %v", err)
+	}
+	htmlBody, err := io.ReadAll(htmlPart)
+	if err != nil {
+		t.Fatalf("read html part body: %v", err)
+	}
+	if ct := htmlPart.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("html part Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(string(htmlBody), "Attached is the certificate you requested.") {
+		t.Fatalf("html part does not contain the body text: %s", htmlBody)
+	}
+	if !strings.Contains(string(htmlBody), "Your certificate: example.com") {
+		t.Fatalf("html part does not contain the subject heading: %s", htmlBody)
+	}
+	if _, err := altReader.NextPart(); err != io.EOF {
+		t.Fatalf("expected exactly two alternative parts (text, html), got a third (err=%v)", err)
 	}
 
 	attachPart, err := mr.NextPart()
@@ -107,12 +144,15 @@ func TestBuildMultipartMIME(t *testing.T) {
 // parsing back to exactly the expected three headers, with the injected
 // text neutralized rather than interpreted, confirms the fix.
 func TestBuildMIMERejectsHeaderInjection(t *testing.T) {
-	raw := buildMIME(
+	raw, err := buildMIME(
 		"alerts@example.com",
 		[]string{"victim@example.com\r\nBcc: attacker@evil.com"},
 		"Your certificate\r\nX-Injected: yes",
 		"body",
 	)
+	if err != nil {
+		t.Fatalf("buildMIME: %v", err)
+	}
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("mail.ReadMessage: %v", err)
@@ -151,6 +191,31 @@ func TestBuildMultipartMIMERejectsHeaderInjection(t *testing.T) {
 	}
 	if strings.Contains(msg.Header.Get("Subject"), "\n") {
 		t.Fatalf("Subject must not carry a raw newline, got %q", msg.Header.Get("Subject"))
+	}
+}
+
+// TestRenderHTMLBodySplitsParagraphsAndEscapes covers the simple HTML email
+// template (template.go): blank-line-separated paragraphs each become their
+// own <p>, and anything that traces back to untrusted input (a certificate
+// common name, say) is HTML-escaped rather than interpreted — the body is
+// rendered by the recipient's own mail client, which has no CSP of its own
+// to fall back on if this app doesn't escape it first.
+func TestRenderHTMLBodySplitsParagraphsAndEscapes(t *testing.T) {
+	got := renderHTMLBody("Your certificate: <script>evil</script>", "First paragraph.\n\nSecond paragraph with a <b>tag</b> and an & ampersand.")
+	if strings.Contains(got, "<script>evil</script>") {
+		t.Fatalf("subject must be HTML-escaped, got: %s", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;evil&lt;/script&gt;") {
+		t.Fatalf("expected the escaped subject to appear, got: %s", got)
+	}
+	if !strings.Contains(got, "<p style=\"margin:0 0 14px;\">First paragraph.</p>") {
+		t.Fatalf("expected the first paragraph wrapped in its own <p>, got: %s", got)
+	}
+	if !strings.Contains(got, "Second paragraph with a &lt;b&gt;tag&lt;/b&gt; and an &amp; ampersand.") {
+		t.Fatalf("expected the second paragraph HTML-escaped, got: %s", got)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(got), "<!doctype html>") {
+		t.Fatalf("expected a full HTML document, got: %s", got)
 	}
 }
 

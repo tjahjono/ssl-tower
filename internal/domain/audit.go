@@ -34,7 +34,6 @@ const (
 	AuditRootCAUploaded         = "root_ca_uploaded"
 	AuditRootCAGenerated        = "root_ca_generated"
 	AuditRootCADeleted          = "root_ca_deleted"
-	AuditCertificateRenewed     = "certificate_renewed"
 
 	AuditRequestSubmitted = "certificate_request_submitted"
 	AuditRequestApproved  = "certificate_request_approved"
