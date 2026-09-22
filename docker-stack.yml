@@ -107,6 +107,16 @@ services:
       ADCS_ENDPOINT: ""
       ADCS_USERNAME: ""
       ADCS_TEMPLATE: ""
+      # v1.18: which transport sends alert email — "smtp" (default) or
+      # "graph" (Microsoft Graph API, the recommended replacement for SMTP
+      # Basic Auth against Microsoft 365). Only a first-boot seed,
+      # portal-editable from /settings from then on.
+      EMAIL_TRANSPORT: "smtp"
+      # Microsoft Graph API email — empty tenant ID disables it entirely;
+      # only takes effect once EMAIL_TRANSPORT is "graph".
+      GRAPH_TENANT_ID: ""
+      GRAPH_CLIENT_ID: ""
+      GRAPH_SENDER_ADDRESS: ""
       # LDAP authentication — only a first-boot seed (v1.8: portal-editable
       # from /settings from then on, so these can just as well be left empty
       # here and configured after the first deploy instead). Empty URL
@@ -146,6 +156,10 @@ services:
       # use LDAP and/or ADCS.
       LDAP_BIND_PASSWORD_FILE: /run/secrets/ssl_tower_ldap_bind_password
       ADCS_PASSWORD_FILE: /run/secrets/ssl_tower_adcs_password
+      # Same story again for the Graph API app registration's client secret
+      # (v1.18) — re-comment this line and its entries in the two
+      # `secrets:` blocks if you don't use Microsoft Graph email.
+      GRAPH_CLIENT_SECRET_FILE: /run/secrets/ssl_tower_graph_client_secret
     secrets:
       - ssl_tower_database_url
       - ssl_tower_encryption_key
@@ -155,6 +169,7 @@ services:
       - ssl_tower_teams_webhook
       - ssl_tower_ldap_bind_password
       - ssl_tower_adcs_password
+      - ssl_tower_graph_client_secret
     ports:
       - "8080:8080"
     networks:
@@ -197,4 +212,9 @@ secrets:
   ssl_tower_ldap_bind_password:
     external: true
   ssl_tower_adcs_password:
+    external: true
+  # Re-comment this one (and its references above) if you don't use
+  # Microsoft Graph email — `make docker-secrets` only creates it when it
+  # finds a non-empty GRAPH_CLIENT_SECRET in .env.
+  ssl_tower_graph_client_secret:
     external: true

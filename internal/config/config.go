@@ -92,6 +92,37 @@ type Config struct {
 	// seeded.
 	TeamsWebhookURL string
 
+	// Email transport settings (v1.18: portal-editable from /settings, same
+	// seed-once-then-portal-authoritative model as everything else in this
+	// block). Microsoft is retiring SMTP AUTH Basic Authentication (a plain
+	// username/password) for Exchange Online / Microsoft 365 — see
+	// CLAUDE.md's v1.18 locked decision — so alert/notification email can
+	// now be sent either via the SMTP settings above or via the Microsoft
+	// Graph API's sendMail endpoint (OAuth2 client-credentials, app-only
+	// auth) configured below. EmailTransport selects which one is active;
+	// "smtp" is the default seed value when empty, preserving pre-v1.18
+	// behavior for every existing deployment. See internal/pkg/graphmail.
+	EmailTransport string
+	// GraphTenantID is the "empty = off" toggle for the Graph transport —
+	// empty means EmailTransport can still be set to "graph" as a live
+	// portal edit, but SettingsService.Update rejects it until a tenant ID
+	// (and the other three Graph fields below) are supplied. This is the
+	// Entra ID (Azure AD) directory (tenant) ID or verified domain name the
+	// app registration below lives in.
+	GraphTenantID string
+	// GraphClientID is the Entra ID application (client) ID of an app
+	// registration granted the Mail.Send *application* permission with
+	// admin consent — app-only auth, not delegated, since this app sends as
+	// a shared mailbox with no signed-in user.
+	GraphClientID string
+	// GraphClientSecret is that app registration's client secret value.
+	GraphClientSecret string
+	// GraphSenderAddress is the mailbox Graph's sendMail call sends as —
+	// e.g. "alerts@example.com" — the app registration's Mail.Send
+	// permission must be able to act as this address (optionally scoped via
+	// an application access policy in Exchange Online).
+	GraphSenderAddress string
+
 	// SessionSecret signs the short-lived "password verified, awaiting MFA"
 	// token. Optional by design: an empty value only survives boot with an
 	// ephemeral, restart-sensitive secret (see cmd/server/main.go).
@@ -302,6 +333,12 @@ func Load() (*Config, error) {
 
 		TeamsWebhookURL: optionalString("TEAMS_WEBHOOK_URL"),
 
+		EmailTransport:     optionalString("EMAIL_TRANSPORT"),
+		GraphTenantID:      optionalString("GRAPH_TENANT_ID"),
+		GraphClientID:      optionalString("GRAPH_CLIENT_ID"),
+		GraphClientSecret:  optionalString("GRAPH_CLIENT_SECRET"),
+		GraphSenderAddress: optionalString("GRAPH_SENDER_ADDRESS"),
+
 		SessionSecret:          optionalString("SESSION_SECRET"),
 		SessionIdleTimeout:     reqDuration("SESSION_IDLE_TIMEOUT"),
 		SessionAbsoluteTimeout: reqDuration("SESSION_ABSOLUTE_TIMEOUT"),
@@ -378,7 +415,9 @@ func Load() (*Config, error) {
 // connection string (it carries the DB password inline — there is no
 // separate DB_PASSWORD field), the session-signing secret, the bootstrap
 // admin password, the SMTP password, the Teams webhook URL (a bearer
-// credential in URL form), and the LDAP service account's bind password.
+// credential in URL form), the LDAP service account's bind password, the
+// ADCS service account's password, and the Graph API app registration's
+// client secret (v1.18).
 // Everything else (ports, thresholds, hostnames, the admin email, LDAP's
 // bind DN and filters) is plain configuration, not a secret, and stays a
 // normal env var.
@@ -391,6 +430,7 @@ var secretFileKeys = []string{
 	"TEAMS_WEBHOOK_URL",
 	"LDAP_BIND_PASSWORD",
 	"ADCS_PASSWORD",
+	"GRAPH_CLIENT_SECRET",
 }
 
 // applySecretFiles implements the standard Docker/Kubernetes secrets-as-files

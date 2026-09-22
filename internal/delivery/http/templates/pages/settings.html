@@ -100,6 +100,71 @@
 
     <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
       <div>
+        <h2 class="text-sm font-semibold text-ink">Email delivery</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          Microsoft is retiring plain username/password (Basic Auth) SMTP sign-in for Exchange
+          Online / Microsoft 365 — if your mail is hosted there, switch this to Microsoft Graph and
+          fill in the section below. SMTP stays available for everything else (on-prem relays, other
+          providers).
+        </p>
+      </div>
+      <div class="flex flex-col gap-2 sm:flex-row sm:gap-6">
+        <label class="flex items-center gap-2 text-sm text-ink-2">
+          <input type="radio" name="email_transport" value="smtp"
+                 {{if ne .Settings.EmailTransport "graph"}}checked{{end}}
+                 class="text-brand-500 focus:ring-brand-500">
+          SMTP (above)
+        </label>
+        <label class="flex items-center gap-2 text-sm text-ink-2">
+          <input type="radio" name="email_transport" value="graph"
+                 {{if eq .Settings.EmailTransport "graph"}}checked{{end}}
+                 class="text-brand-500 focus:ring-brand-500">
+          Microsoft Graph API (below)
+        </label>
+      </div>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
+        <h2 class="text-sm font-semibold text-ink">Microsoft Graph API (Microsoft 365 email)</h2>
+        <p class="mt-0.5 text-xs text-ink-5">
+          Leave the tenant ID empty to keep this off. Needs an Entra ID app registration with the
+          Mail.Send <em>application</em> permission, admin-consented, and the sender address must be a
+          mailbox that registration is allowed to send as. Only used when "Email delivery" above is set
+          to Microsoft Graph.
+        </p>
+      </div>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label for="graph_tenant_id" class="field-label mb-1 block">Tenant ID</label>
+          <input id="graph_tenant_id" name="graph_tenant_id" type="text" placeholder="00000000-0000-0000-0000-000000000000"
+                 value="{{.Settings.GraphTenantID}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="graph_client_id" class="field-label mb-1 block">Client (application) ID</label>
+          <input id="graph_client_id" name="graph_client_id" type="text" autocomplete="off"
+                 value="{{.Settings.GraphClientID}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label for="graph_client_secret" class="field-label mb-1 block">Client secret</label>
+          <input id="graph_client_secret" name="graph_client_secret" type="password" autocomplete="new-password"
+                 placeholder="{{if hasValue .Settings.GraphClientSecret}}•••• leave blank to keep current{{else}}not set{{end}}"
+                 class="field-input w-full px-3 py-2 text-sm">
+          <label class="mt-1.5 flex items-center gap-2 text-xs text-ink-5">
+            <input type="checkbox" name="graph_client_secret_clear" class="rounded border-line/20 bg-surface text-brand-500 focus:ring-brand-500">
+            Clear the stored client secret
+          </label>
+        </div>
+        <div>
+          <label for="graph_sender_address" class="field-label mb-1 block">Send-as mailbox</label>
+          <input id="graph_sender_address" name="graph_sender_address" type="email" placeholder="alerts@example.com"
+                 value="{{.Settings.GraphSenderAddress}}" class="field-input w-full px-3 py-2 text-sm">
+        </div>
+      </div>
+    </section>
+
+    <section class="space-y-4 rounded-xl border border-line/5 bg-card/40 p-6">
+      <div>
         <h2 class="text-sm font-semibold text-ink">Microsoft Teams alerts</h2>
         <p class="mt-0.5 text-xs text-ink-5">Leave empty to disable the Teams channel entirely.</p>
       </div>

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/graphmail"
 	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
 )
 
@@ -64,6 +65,8 @@ var settingKeys = []string{
 	domain.SettingLDAPBaseDN, domain.SettingLDAPUserFilter, domain.SettingLDAPGroupFilter,
 	domain.SettingLDAPRoleMapEditor, domain.SettingLDAPRoleMapViewer, domain.SettingLDAPRoleMapRequester,
 	domain.SettingADCSEndpoint, domain.SettingADCSUsername, domain.SettingADCSPassword, domain.SettingADCSTemplate,
+	domain.SettingEmailTransport,
+	domain.SettingGraphTenantID, domain.SettingGraphClientID, domain.SettingGraphClientSecret, domain.SettingGraphSenderAddress,
 }
 
 // Bootstrap seeds app_settings from seed, but only for keys that don't
@@ -113,6 +116,21 @@ func (s *SettingsService) Bootstrap(ctx context.Context, seed SeedValues) error 
 	seedIfMissing(domain.SettingADCSUsername, seed.Settings.ADCSUsername)
 	seedIfMissing(domain.SettingADCSPassword, seed.Settings.ADCSPassword)
 	seedIfMissing(domain.SettingADCSTemplate, seed.Settings.ADCSTemplate)
+	// EmailTransport defaults to "smtp" when the seed carries no value (the
+	// pre-v1.18 EMAIL_TRANSPORT env var is entirely new, so every existing
+	// deployment's .env leaves it unset) — this preserves the SMTP-only
+	// behavior every deployment already had before Graph API support
+	// existed, rather than seeding an empty transport a live edit would
+	// then have to notice and fix.
+	emailTransport := strings.TrimSpace(seed.Settings.EmailTransport)
+	if emailTransport == "" {
+		emailTransport = domain.EmailTransportSMTP
+	}
+	seedIfMissing(domain.SettingEmailTransport, emailTransport)
+	seedIfMissing(domain.SettingGraphTenantID, seed.Settings.GraphTenantID)
+	seedIfMissing(domain.SettingGraphClientID, seed.Settings.GraphClientID)
+	seedIfMissing(domain.SettingGraphClientSecret, seed.Settings.GraphClientSecret)
+	seedIfMissing(domain.SettingGraphSenderAddress, seed.Settings.GraphSenderAddress)
 	seedIfMissing(domain.SettingEncryptionKey, seed.EncryptionKey)
 
 	if len(toSeed) > 0 {
@@ -171,6 +189,16 @@ func (s *SettingsService) Reload(ctx context.Context) error {
 		ADCSUsername: values[domain.SettingADCSUsername],
 		ADCSPassword: values[domain.SettingADCSPassword],
 		ADCSTemplate: values[domain.SettingADCSTemplate],
+
+		// EmailTransport left as whatever's stored (including "", pre-v1.18
+		// rows that predate this key) — Mailer() below only special-cases
+		// domain.EmailTransportGraph, so any other value (empty included)
+		// falls back to the SMTP notifier exactly as it always has.
+		EmailTransport:     values[domain.SettingEmailTransport],
+		GraphTenantID:      values[domain.SettingGraphTenantID],
+		GraphClientID:      values[domain.SettingGraphClientID],
+		GraphClientSecret:  values[domain.SettingGraphClientSecret],
+		GraphSenderAddress: values[domain.SettingGraphSenderAddress],
 	}
 	s.current.Store(&next)
 	return nil
@@ -192,6 +220,9 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 		return err
 	}
 	if err := validateADCSPatch(patch); err != nil {
+		return err
+	}
+	if err := validateGraphPatch(patch); err != nil {
 		return err
 	}
 
@@ -223,6 +254,12 @@ func (s *SettingsService) Update(ctx context.Context, patch domain.AppSettings, 
 		domain.SettingADCSUsername: strings.TrimSpace(patch.ADCSUsername),
 		domain.SettingADCSPassword: patch.ADCSPassword,
 		domain.SettingADCSTemplate: strings.TrimSpace(patch.ADCSTemplate),
+
+		domain.SettingEmailTransport:     strings.TrimSpace(patch.EmailTransport),
+		domain.SettingGraphTenantID:      strings.TrimSpace(patch.GraphTenantID),
+		domain.SettingGraphClientID:      strings.TrimSpace(patch.GraphClientID),
+		domain.SettingGraphClientSecret:  patch.GraphClientSecret,
+		domain.SettingGraphSenderAddress: strings.TrimSpace(patch.GraphSenderAddress),
 	}
 	if err := s.repo.SetMany(ctx, values, updatedBy); err != nil {
 		return err
@@ -289,6 +326,41 @@ func validateADCSPatch(patch domain.AppSettings) error {
 	return nil
 }
 
+// validateGraphPatch enforces the Graph API email settings' cross-field
+// rules — same reasoning and shape as validateADCSPatch, with
+// GraphTenantID playing ADCSEndpoint's role as the "empty = off" toggle:
+// once it's set, GraphClientID/GraphClientSecret/GraphSenderAddress all
+// become required. Additionally, EmailTransport can only be set to "graph"
+// once a tenant ID (and so, transitively, the rest of the Graph fields) is
+// present — a live edit can't switch the active transport to Graph while
+// leaving the Graph section half-filled. See CLAUDE.md's v1.18 locked
+// decision.
+func validateGraphPatch(patch domain.AppSettings) error {
+	transport := strings.TrimSpace(patch.EmailTransport)
+	if transport != "" && transport != domain.EmailTransportSMTP && transport != domain.EmailTransportGraph {
+		return domain.Invalid("email_transport", `must be "smtp" or "graph"`)
+	}
+
+	tenantID := strings.TrimSpace(patch.GraphTenantID)
+	if transport == domain.EmailTransportGraph && tenantID == "" {
+		return domain.Invalid("graph_tenant_id", "is required when Microsoft Graph is the selected email transport")
+	}
+	if tenantID == "" {
+		return nil
+	}
+	required := map[string]string{
+		"Graph client ID":      patch.GraphClientID,
+		"Graph client secret":  patch.GraphClientSecret,
+		"Graph sender address": patch.GraphSenderAddress,
+	}
+	for label, v := range required {
+		if strings.TrimSpace(v) == "" {
+			return domain.Invalid("graph", label+" is required when the Graph tenant ID is set")
+		}
+	}
+	return nil
+}
+
 // EncryptionKeyValue reads the current APP_ENCRYPTION_KEY value directly —
 // deliberately bypassing the cached AppSettings snapshot, since this value
 // is sensitive enough that it shouldn't sit in a struct that gets copied
@@ -315,6 +387,30 @@ func (s *SettingsService) EmailNotifier() *notify.EmailNotifier {
 		Username: cur.SMTPUsername, Password: cur.SMTPPassword,
 		From: cur.AlertEmailFrom, To: cur.AlertEmailTo,
 	})
+}
+
+// Mailer returns the notify.Mailer for whichever email transport is
+// currently active (domain.AppSettings.EmailTransport, v1.18) — a
+// graphmail.Notifier when it's "graph", otherwise the SMTP-backed
+// EmailNotifier above, which is what every deployment used exclusively
+// before this setting existed and remains the default for any other/empty
+// value. Built fresh from the current snapshot each call, same reasoning as
+// EmailNotifier/TeamsNotifier. AlertService and CertificateRequestService
+// call this instead of EmailNotifier() directly, so they stay agnostic to
+// which transport is configured; EmailNotifier() itself is kept only
+// because Mailer needs it for the SMTP branch.
+func (s *SettingsService) Mailer() notify.Mailer {
+	cur := s.Current()
+	if cur.EmailTransport == domain.EmailTransportGraph {
+		return graphmail.NewNotifier(graphmail.Config{
+			TenantID:     cur.GraphTenantID,
+			ClientID:     cur.GraphClientID,
+			ClientSecret: cur.GraphClientSecret,
+			Sender:       cur.GraphSenderAddress,
+			AlertTo:      cur.AlertEmailTo,
+		})
+	}
+	return s.EmailNotifier()
 }
 
 // TeamsNotifier builds a fresh notify.TeamsNotifier from the current

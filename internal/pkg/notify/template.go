@@ -16,6 +16,14 @@ import (
 // common name or a ticket ID that ultimately traces back to a requester's
 // own input, and this is rendered by the *recipient's* mail client, not
 // this app, so there is no CSP of its own to fall back on.
+// RenderHTMLBody exposes renderHTMLBody to other packages that need the
+// same branded HTML rendering for a message they send through a different
+// transport — currently internal/pkg/graphmail (v1.18), so a Graph API
+// email looks identical to an SMTP one.
+func RenderHTMLBody(subject, body string) string {
+	return renderHTMLBody(subject, body)
+}
+
 func renderHTMLBody(subject, textBody string) string {
 	var paragraphs strings.Builder
 	for _, para := range strings.Split(strings.TrimSpace(textBody), "\n\n") {

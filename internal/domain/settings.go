@@ -52,6 +52,31 @@ const (
 	SettingADCSPassword = "adcs_password"
 	SettingADCSTemplate = "adcs_template"
 
+	// Email transport (v1.18) — "smtp" (the default, and the only behavior
+	// that existed before this) or "graph" (Microsoft Graph API). Portal-
+	// editable, same table as everything else here. See
+	// EmailTransportSMTP/EmailTransportGraph below and CLAUDE.md's v1.18
+	// locked decision: Microsoft is retiring SMTP AUTH with a plain
+	// username and password for Exchange Online/Microsoft 365 — Basic
+	// Authentication disabled by default for existing tenants by the end
+	// of December 2026, OAuth-only for every tenant created after that —
+	// so a deployment sending alert/ticket email through M365 needs a way
+	// off plain SMTP auth before then. Selecting "graph" here requires the
+	// Graph fields below to actually be configured (enforced by
+	// SettingsService.Update's validateGraphPatch, not here).
+	SettingEmailTransport = "email_transport"
+
+	// Microsoft Graph API email (v1.18) — the OAuth2/app-registration
+	// alternative to SMTP username+password. GraphTenantID is this
+	// section's own "empty = off" toggle (independent of whether Graph is
+	// actually the *active* transport — see SettingEmailTransport above):
+	// once set, GraphClientID/GraphClientSecret/GraphSenderAddress become
+	// required.
+	SettingGraphTenantID      = "graph_tenant_id"
+	SettingGraphClientID      = "graph_client_id"
+	SettingGraphClientSecret  = "graph_client_secret"
+	SettingGraphSenderAddress = "graph_sender_address"
+
 	// SettingEncryptionKey is persisted in this same table — there is
 	// nowhere else durable to put it once it's portal-editable — but it is
 	// deliberately NOT part of AppSettings/SettingsService's generic
@@ -61,6 +86,13 @@ const (
 	// CertificateService.RotateEncryptionKey instead. See CLAUDE.md's
 	// locked decision on why.
 	SettingEncryptionKey = "app_encryption_key"
+)
+
+// Email transport values for AppSettings.EmailTransport /
+// SettingEmailTransport — see that field's doc comment.
+const (
+	EmailTransportSMTP  = "smtp"
+	EmailTransportGraph = "graph"
 )
 
 // AppSettings is the live, typed snapshot of every portal-editable
@@ -118,6 +150,27 @@ type AppSettings struct {
 	ADCSUsername string
 	ADCSPassword string
 	ADCSTemplate string
+
+	// EmailTransport picks which channel SettingsService.Mailer returns —
+	// EmailTransportSMTP (the default, and every behavior that existed
+	// before v1.18) or EmailTransportGraph. See CLAUDE.md's v1.18 locked
+	// decision.
+	EmailTransport string
+
+	// Microsoft Graph API email (v1.18) — the OAuth2/app-registration
+	// alternative to plain SMTP username+password, which Microsoft is
+	// retiring for Exchange Online/Microsoft 365. GraphTenantID is the
+	// "empty = off" toggle for this section's own required-fields check;
+	// once set, GraphClientID/GraphClientSecret/GraphSenderAddress become
+	// required — enforced by SettingsService.Update, not here. The app
+	// registration needs the Mail.Send *application* permission, admin-
+	// consented; GraphSenderAddress is the mailbox Graph sends as (POSTed
+	// to /v1.0/users/{GraphSenderAddress}/sendMail — see
+	// internal/pkg/graphmail).
+	GraphTenantID      string
+	GraphClientID      string
+	GraphClientSecret  string
+	GraphSenderAddress string
 }
 
 // SettingsRepository is the persistence port for admin-editable operational

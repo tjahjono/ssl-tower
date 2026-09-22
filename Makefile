@@ -157,6 +157,12 @@ docker-secrets: ## Create every Docker secret docker-stack.yml needs, sourced fr
 		create_if_missing ssl_tower_adcs_password "$$ADCS_PW"; \
 	else \
 		echo "ADCS_PASSWORD is empty in .env — skipping ssl_tower_adcs_password (leave it commented out in docker-stack.yml too, or the ADCS integration stays off)"; \
+	fi; \
+	GRAPH_SECRET=$$(env_val GRAPH_CLIENT_SECRET); \
+	if [ -n "$$GRAPH_SECRET" ]; then \
+		create_if_missing ssl_tower_graph_client_secret "$$GRAPH_SECRET"; \
+	else \
+		echo "GRAPH_CLIENT_SECRET is empty in .env — skipping ssl_tower_graph_client_secret (leave it commented out in docker-stack.yml too; Graph API email can still be configured later from /settings)"; \
 	fi
 	@echo "Re-run 'docker secret inspect <name>' any time to check what exists — a secret already created is left untouched, since Docker secrets are immutable. To pick up a changed .env value, create a new secret under a new name and update docker-stack.yml's reference to it (see that file's header comment)."
 

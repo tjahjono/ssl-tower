@@ -1532,6 +1532,152 @@ one is a cross-cutting change, not a tweak — flag it to the user first.
     states still read clearly as blue/informational next to the new red
     primary buttons.
 
+- **v1.18: Microsoft Graph API added as a second email transport, alongside
+  SMTP rather than replacing it, and portal-editable from /settings from
+  day one** — prompted directly by the user asking about M365 SMTP:
+  Microsoft is retiring SMTP AUTH Basic Authentication (a plain username +
+  password) for Exchange Online / Microsoft 365 — unchanged through
+  December 2026, disabled by default for existing tenants at the end of
+  December 2026, mandatory OAuth for every tenant created after that date,
+  full retirement expected in the second half of 2027 (see
+  https://learn.microsoft.com/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online
+  and https://techcommunity.microsoft.com/ — confirmed against multiple
+  independent sources, not assumed from training data, since this is a
+  live-changing deprecation timeline). SSL Tower's existing SMTP integration
+  (`internal/pkg/notify.EmailNotifier`) uses exactly that basic-auth shape
+  (`SMTP_USERNAME`/`SMTP_PASSWORD`), so any deployment pointed at
+  `smtp.office365.com` breaks on that timeline. SMTP itself is **not**
+  removed or deprecated in this codebase — it's still the right transport
+  for on-prem relays and every other provider — Graph is offered as an
+  alternative, selected per-deployment.
+  - **New package `internal/pkg/graphmail`** (`client.go`, `notifier.go`),
+    mirroring `internal/pkg/digicert`/`internal/pkg/adcs`'s established
+    shape exactly: a small `Client interface { SendMail(ctx, Message) error
+    }` seam over the real network calls, a `*HTTPClient` implementing it
+    (`var _ Client = (*HTTPClient)(nil)`), and `Config` carrying test-only
+    override fields (`TokenURL`, `GraphBaseURL`, `HTTPClient
+    *http.Client`) the same way `adcs.Config.HTTPClient` does. Auth is
+    OAuth 2.0 **client-credentials grant** (app-only, not delegated) against
+    Entra ID (`POST
+    https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`,
+    `scope=https://graph.microsoft.com/.default`) — the access token is
+    cached in-memory on the `*HTTPClient` (a mutex-guarded field, refreshed
+    a minute before its reported expiry) so a burst of alerts doesn't
+    re-authenticate per send. `SendMail` posts to Graph's
+    `/v1.0/users/{sender}/sendMail`, building the JSON request shape Graph
+    documents directly (`message.subject`/`body`/`toRecipients`/
+    `attachments`, `saveToSentItems` left at its zero value/false) rather
+    than going through any Graph SDK — no new third-party dependency was
+    needed (confirmed via `go.mod`: the whole package uses only stdlib
+    `encoding/json`/`net/http`/`net/url`). The app registration needs the
+    **Mail.Send *application* permission**, admin-consented, and must be
+    allowed to send as whatever mailbox `GraphSenderAddress` names.
+  - **`notify.Mailer`, a new interface** (`internal/pkg/notify/mailer.go`)
+    capturing `EmailNotifier`'s exact existing method set (`Enabled() bool`,
+    `TransportReady() bool`, `Send(subject, body string) error`,
+    `SendWithAttachment(to []string, subject, body string, attachments
+    ...Attachment) error`) — `*notify.EmailNotifier` (SMTP) and the new
+    `*graphmail.Notifier` (Graph) both implement it (each asserted with a
+    `var _ notify.Mailer = (*T)(nil)` line), so every call site can depend
+    on the interface instead of either concrete type.
+    `notify.RenderHTMLBody` is a new one-line exported wrapper around the
+    existing unexported `renderHTMLBody`, so `graphmail.Notifier.Send`
+    reuses the exact same branded HTML template SMTP alerts already use —
+    a Graph-delivered alert looks identical to an SMTP-delivered one.
+  - **Settings: `EmailTransport` (`"smtp"`/`"graph"`, `domain.
+    EmailTransportSMTP`/`EmailTransportGraph`) plus `GraphTenantID`/
+    `GraphClientID`/`GraphClientSecret`/`GraphSenderAddress`**, all five
+    following the exact seed-once-then-portal-authoritative pattern v1.5
+    established and v1.8/v1.16 already extended to LDAP/ADCS —
+    `config.Load()`'s new `EMAIL_TRANSPORT`/`GRAPH_*` env vars are only a
+    first-boot seed (`SettingsService.Bootstrap`), the portal/database
+    governs the live value from then on. `GraphTenantID` plays the same
+    "empty = off" toggle role `ADCSEndpoint`/`LDAPURL` already play — a new
+    `validateGraphPatch` (mirroring `validateADCSPatch`) requires
+    `GraphClientID`/`GraphClientSecret`/`GraphSenderAddress` once it's set,
+    and separately rejects `EmailTransport=graph` while `GraphTenantID` is
+    still empty (so a live edit can't switch the active transport to Graph
+    while leaving the Graph section half-filled) and rejects any
+    `EmailTransport` value other than the two known ones outright, rather
+    than silently falling back to SMTP on a typo. `Bootstrap` seeds
+    `EmailTransport` to `"smtp"` whenever the env seed is empty — every
+    existing deployment's `.env` predates `EMAIL_TRANSPORT` entirely, so
+    this is what keeps every current deployment's behavior unchanged after
+    an upgrade, with no action required. `GraphClientSecret` is a
+    write-only field in the `/settings` UI (never pre-filled with the real
+    stored value; blank keeps what's stored; an explicit "Clear the stored
+    client secret" checkbox is the only way to wipe it), the same
+    convention `SMTPPassword`/`LDAPBindPassword`/`ADCSPassword` already
+    use, and `GRAPH_CLIENT_SECRET` was added to `config.go`'s
+    `secretFileKeys` (Docker-secrets-eligible, same as those three).
+  - **`SettingsService.Mailer() notify.Mailer`** is the new method every
+    caller should use — it builds a fresh `graphmail.Notifier` from the
+    current snapshot when `EmailTransport == domain.EmailTransportGraph`,
+    otherwise falls back to the existing `EmailNotifier()` (SMTP), same
+    "always current, never cached" reasoning as `EmailNotifier`/
+    `TeamsNotifier` themselves. `AlertService` (both its `Enabled()` check
+    and its `notify` helper) and `CertificateRequestService` (`EmailReady`,
+    the "send certificate by email" ticket action, and `AutoDraftRenewals`'
+    notify helper) were switched from calling `settings.EmailNotifier()`
+    directly to `settings.Mailer()` — `EmailNotifier()` itself is kept only
+    because `Mailer` needs it for the SMTP branch, not as something other
+    code should still call. `CertificateRequestService.SendCertificateEmail`'s
+    "not configured" error message was reworded from the SMTP-specific
+    "set SMTP_HOST and ALERT_EMAIL_FROM" to a transport-agnostic "set it up
+    from /settings (SMTP or Microsoft Graph)".
+  - **`/settings` UI**: a new "Email delivery" section (a `smtp`/`graph`
+    radio selector, `email_transport`) sits between the existing "Email
+    alerts (SMTP)" section and a new "Microsoft Graph API (Microsoft 365
+    email)" section (tenant ID / client ID / write-only client secret +
+    clear checkbox / send-as mailbox, mirroring the ADCS section's
+    field-by-field layout) — both inserted before the existing "Microsoft
+    Teams alerts" section, so the SMTP fields, the transport choice, and
+    the Graph fields all read top-to-bottom in the order an admin would
+    actually fill them in. Verified the template parses (a throwaway
+    `go test` calling `NewRenderer()` directly, the same fast-fail check
+    `render.go`'s own doc comment describes happening at boot) rather than
+    only trusting a visual read of the diff.
+  - **`docker-compose.yml`/`docker-stack.yml`/`Makefile`/`.env.example`**
+    all updated with the same "re-comment if not configured" convention
+    the LDAP/ADCS additions already established: `docker-stack.yml` gets
+    `GRAPH_CLIENT_SECRET_FILE`/`ssl_tower_graph_client_secret` as an
+    `external: true` secret the Makefile's `docker-secrets` target only
+    creates when `.env` has a non-empty `GRAPH_CLIENT_SECRET`, with the
+    same "leave it commented out, or the integration stays off" comment on
+    every reference. `docker-compose.yml` gets the five new plain env vars
+    with `${VAR:-default}` defaults. Both YAML files confirmed to still
+    parse (`yaml.safe_load`) and the Makefile target confirmed with
+    `make -n docker-secrets` after editing.
+  - Covered by new tests mirroring the existing ADCS ones exactly, plus two
+    Graph-specific cases ADCS has no equivalent for (there being no
+    "transport selector" concept in the ADCS/LDAP integrations):
+    `TestUpdateAcceptsValidGraphConfig`,
+    `TestUpdateRejectsGraphMissingRequiredField`,
+    `TestUpdateWithoutGraphTenantIDIgnoresOtherGraphFields`,
+    `TestUpdateRejectsGraphTransportWithoutTenantID`,
+    `TestUpdateRejectsUnknownEmailTransport`, and
+    `TestMailerSelectsTransportFromCurrentSettings` (settings-service
+    layer, `internal/service/settings_service_test.go`); a new
+    `internal/pkg/graphmail/client_test.go` exercises the full `SendMail`
+    call against real `httptest.Server`s standing in for Entra ID's token
+    endpoint and Graph's own API — the client-credentials token request
+    shape, bearer-token propagation onto the `sendMail` request, token
+    caching across repeated sends (confirmed the token endpoint is hit
+    exactly once across three sends), attachment base64 encoding, and both
+    a token-endpoint error and a Graph-endpoint error being surfaced with
+    the response body rather than swallowed. `go build`/`vet`/`test ./...`
+    all pass across the whole repository. **No real Entra ID tenant or
+    Microsoft 365 mailbox was available in this session — nothing here was
+    verified against a live tenant**, only unit tests and local
+    `httptest.Server`s, the same caveat this file's DigiCert/ADCS sections
+    already carry for their own external APIs. Before relying on this in
+    production: register an app in Entra ID, grant it the Mail.Send
+    *application* permission with admin consent, set
+    `GRAPH_TENANT_ID`/`GRAPH_CLIENT_ID`/`GRAPH_CLIENT_SECRET`/
+    `GRAPH_SENDER_ADDRESS` (or the `/settings` equivalents), switch "Email
+    delivery" to Microsoft Graph, and send a real test alert before cutting
+    over a production M365 mailbox away from SMTP.
+
 ## CodeQL
 
 A local CodeQL setup exists for cheap, targeted static analysis — running a

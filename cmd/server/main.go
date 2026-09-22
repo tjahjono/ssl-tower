@@ -84,6 +84,11 @@ func run() error {
 			ADCSUsername:         cfg.ADCSUsername,
 			ADCSPassword:         cfg.ADCSPassword,
 			ADCSTemplate:         cfg.ADCSTemplate,
+			EmailTransport:       cfg.EmailTransport,
+			GraphTenantID:        cfg.GraphTenantID,
+			GraphClientID:        cfg.GraphClientID,
+			GraphClientSecret:    cfg.GraphClientSecret,
+			GraphSenderAddress:   cfg.GraphSenderAddress,
 		},
 		EncryptionKey: cfg.EncryptionKey,
 	}
@@ -129,7 +134,7 @@ func run() error {
 		CriticalPercent: cfg.ExpiryCriticalPercent,
 	})
 	if alertSvc.Enabled() {
-		log.Info("alerting enabled", "email", settingsSvc.EmailNotifier().Enabled(), "teams", settingsSvc.TeamsNotifier().Enabled())
+		log.Info("alerting enabled", "email", settingsSvc.Mailer().Enabled(), "email_transport", settingsSvc.Current().EmailTransport, "teams", settingsSvc.TeamsNotifier().Enabled())
 	} else {
 		log.Warn("alerting is not configured — set SMTP/ALERT_EMAIL_* and/or the Teams webhook from /settings to enable it")
 	}

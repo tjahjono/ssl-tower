@@ -120,7 +120,7 @@ func NewAlertService(repo AlertRepository, settings *SettingsService, log *slog.
 // useful for a boot-time log line so a silently misconfigured deployment
 // isn't discovered only when the first certificate actually expires.
 func (a *AlertService) Enabled() bool {
-	return a != nil && (a.settings.EmailNotifier().Enabled() || a.settings.TeamsNotifier().Enabled())
+	return a != nil && (a.settings.Mailer().Enabled() || a.settings.TeamsNotifier().Enabled())
 }
 
 func (a *AlertService) levelFor(c *domain.Certificate) AlertLevel {
@@ -185,7 +185,7 @@ func (a *AlertService) Evaluate(ctx context.Context, c *domain.Certificate) {
 // never block certificate operations, and the other channel might still get
 // through.
 func (a *AlertService) notify(ctx context.Context, subject, body, color string) {
-	email := a.settings.EmailNotifier()
+	email := a.settings.Mailer()
 	teams := a.settings.TeamsNotifier()
 	if email.Enabled() {
 		if err := email.Send(subject, body); err != nil {

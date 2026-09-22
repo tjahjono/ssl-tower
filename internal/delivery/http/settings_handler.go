@@ -119,6 +119,14 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 		adcsPassword = v
 	}
 
+	// graph_client_secret is write-only, same pattern as above (v1.18).
+	graphClientSecret := current.GraphClientSecret
+	if r.PostFormValue("graph_client_secret_clear") == "on" {
+		graphClientSecret = ""
+	} else if v := r.PostFormValue("graph_client_secret"); v != "" {
+		graphClientSecret = v
+	}
+
 	patch := domain.AppSettings{
 		ExpiryWarningDays:  warningDays,
 		ExpiryCriticalDays: criticalDays,
@@ -147,6 +155,12 @@ func (s *Server) handleSettingsSubmit(w http.ResponseWriter, r *http.Request) {
 		ADCSUsername: strings.TrimSpace(r.PostFormValue("adcs_username")),
 		ADCSPassword: adcsPassword,
 		ADCSTemplate: strings.TrimSpace(r.PostFormValue("adcs_template")),
+
+		EmailTransport:     strings.TrimSpace(r.PostFormValue("email_transport")),
+		GraphTenantID:      strings.TrimSpace(r.PostFormValue("graph_tenant_id")),
+		GraphClientID:      strings.TrimSpace(r.PostFormValue("graph_client_id")),
+		GraphClientSecret:  graphClientSecret,
+		GraphSenderAddress: strings.TrimSpace(r.PostFormValue("graph_sender_address")),
 	}
 
 	user := s.currentUser(r)

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/ivangiovn/ssl-generator/internal/domain"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/graphmail"
+	"github.com/ivangiovn/ssl-generator/internal/pkg/notify"
 )
 
 // fakeSettingsRepository is a minimal in-memory domain.SettingsRepository,
@@ -428,5 +430,138 @@ func TestEncryptionKeyValueNeverAppearsInAppSettings(t *testing.T) {
 	}
 	if key != "seed-key" {
 		t.Fatalf("EncryptionKeyValue = %q, want seed-key unaffected by an unrelated Update", key)
+	}
+}
+
+func validGraphPatch() domain.AppSettings {
+	return domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3,
+		EmailTransport: domain.EmailTransportGraph,
+		GraphTenantID:  "tenant-id", GraphClientID: "client-id",
+		GraphClientSecret: "client-secret", GraphSenderAddress: "alerts@example.com",
+	}
+}
+
+func TestUpdateAcceptsValidGraphConfig(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	if err := svc.Update(context.Background(), validGraphPatch(), "admin@example.com"); err != nil {
+		t.Fatalf("Update: unexpected error with a fully valid Graph config: %v", err)
+	}
+	cur := svc.Current()
+	if cur.EmailTransport != domain.EmailTransportGraph || cur.GraphSenderAddress != "alerts@example.com" {
+		t.Fatalf("Graph settings not saved: %+v", cur)
+	}
+}
+
+func TestUpdateRejectsGraphMissingRequiredField(t *testing.T) {
+	fields := map[string]func(*domain.AppSettings){
+		"GraphClientID":      func(p *domain.AppSettings) { p.GraphClientID = "" },
+		"GraphClientSecret":  func(p *domain.AppSettings) { p.GraphClientSecret = "" },
+		"GraphSenderAddress": func(p *domain.AppSettings) { p.GraphSenderAddress = "" },
+	}
+	for name, clear := range fields {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeSettingsRepository()
+			svc := NewSettingsService(repo, discardLogger())
+			if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+				t.Fatalf("Bootstrap: %v", err)
+			}
+			patch := validGraphPatch()
+			clear(&patch)
+
+			err := svc.Update(context.Background(), patch, "admin@example.com")
+			if _, ok := domain.AsValidation(err); !ok {
+				t.Fatalf("Update: expected a ValidationError with %s cleared while GraphTenantID is set, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestUpdateWithoutGraphTenantIDIgnoresOtherGraphFields(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// GraphTenantID left empty — the "empty = off" toggle — even though
+	// EmailTransport is left at its zero value (not "graph") too, so
+	// nothing about the Graph section is configured at all.
+	patch := domain.AppSettings{ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3}
+	if err := svc.Update(context.Background(), patch, "admin@example.com"); err != nil {
+		t.Fatalf("Update: expected no error with GraphTenantID empty, got %v", err)
+	}
+}
+
+// TestUpdateRejectsGraphTransportWithoutTenantID confirms EmailTransport
+// can't be switched to "graph" while the Graph section is left unfilled —
+// distinct from the "empty = off" toggle case above, since here
+// EmailTransport itself is the thing demanding the Graph fields exist,
+// independently of whether GraphTenantID happens to be set.
+func TestUpdateRejectsGraphTransportWithoutTenantID(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	patch := domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3,
+		EmailTransport: domain.EmailTransportGraph,
+	}
+	err := svc.Update(context.Background(), patch, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError when EmailTransport=graph but GraphTenantID is empty, got %v", err)
+	}
+}
+
+// TestUpdateRejectsUnknownEmailTransport confirms EmailTransport is
+// restricted to the two known values, rather than silently accepting a
+// typo and falling back to SMTP with no indication anything was wrong.
+func TestUpdateRejectsUnknownEmailTransport(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	patch := domain.AppSettings{
+		ExpiryWarningDays: 30, ExpiryCriticalDays: 7, ExpiryFinalDays: 1, TicketSLADays: 3,
+		EmailTransport: "carrier-pigeon",
+	}
+	err := svc.Update(context.Background(), patch, "admin@example.com")
+	if _, ok := domain.AsValidation(err); !ok {
+		t.Fatalf("Update: expected a ValidationError for an unrecognized email_transport value, got %v", err)
+	}
+}
+
+// TestMailerSelectsTransportFromCurrentSettings confirms Mailer() switches
+// between the SMTP-backed EmailNotifier and a graphmail.Notifier purely
+// based on the live EmailTransport setting — the whole point of routing
+// every caller through Mailer() instead of EmailNotifier() directly.
+func TestMailerSelectsTransportFromCurrentSettings(t *testing.T) {
+	repo := newFakeSettingsRepository()
+	svc := NewSettingsService(repo, discardLogger())
+	if err := svc.Bootstrap(context.Background(), testSeed()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	// testSeed() carries no EmailTransport, and Bootstrap defaults an empty
+	// seed value to "smtp" — so with no Update at all yet, Mailer() should
+	// already be the SMTP notifier.
+	if _, ok := svc.Mailer().(*notify.EmailNotifier); !ok {
+		t.Fatalf("Mailer() = %T, want *notify.EmailNotifier when EmailTransport defaults to smtp", svc.Mailer())
+	}
+
+	if err := svc.Update(context.Background(), validGraphPatch(), "admin@example.com"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, ok := svc.Mailer().(*graphmail.Notifier); !ok {
+		t.Fatalf("Mailer() = %T, want *graphmail.Notifier once EmailTransport is graph", svc.Mailer())
 	}
 }

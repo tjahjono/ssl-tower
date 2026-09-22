@@ -58,7 +58,7 @@ func (s *CertificateRequestService) SLADays() int {
 // EmailReady reports whether enough SMTP configuration is present to attempt
 // SendCertificateEmail — used by the ticket detail page to explain why the
 // "send by email" form is unavailable rather than just letting it fail.
-func (s *CertificateRequestService) EmailReady() bool { return s.settings.EmailNotifier().TransportReady() }
+func (s *CertificateRequestService) EmailReady() bool { return s.settings.Mailer().TransportReady() }
 
 // SubmitInput is the requester-facing ticket submission form.
 type SubmitInput struct {
@@ -540,9 +540,9 @@ func (s *CertificateRequestService) SendCertificateEmail(ctx context.Context, in
 	if recipient == "" {
 		return nil, domain.Invalid("recipient", "a recipient email address is required")
 	}
-	email := s.settings.EmailNotifier()
+	email := s.settings.Mailer()
 	if !email.TransportReady() {
-		return nil, domain.Invalid("email", "email isn't configured on this server — set SMTP_HOST and ALERT_EMAIL_FROM")
+		return nil, domain.Invalid("email", "email isn't configured on this server — set it up from /settings (SMTP or Microsoft Graph)")
 	}
 
 	result, err := s.certs.Export(ctx, *r.ResultCertificateID, ExportOptions{Format: in.Format})
@@ -656,7 +656,7 @@ func (s *CertificateRequestService) AutoDraftRenewals(ctx context.Context) (int,
 // AlertService.notify does — a broken channel is logged and otherwise
 // ignored, never allowed to fail the ticket action itself.
 func (s *CertificateRequestService) notify(ctx context.Context, subject, body string) {
-	email := s.settings.EmailNotifier()
+	email := s.settings.Mailer()
 	teams := s.settings.TeamsNotifier()
 	if email.Enabled() {
 		if err := email.Send(subject, body); err != nil {
